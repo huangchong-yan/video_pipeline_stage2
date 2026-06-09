@@ -1,0 +1,70 @@
+{
+  "dify": {
+    "enabled": false,
+    "base_url": "https://api.dify.ai/v1",
+    "api_key_env": "DIFY_API_KEY",
+    "endpoint": "/workflows/run",
+    "response_mode": "streaming",
+    "user": "video-pipeline",
+    "trust_env_proxy": true,
+    "proxy": "",
+    "network_retries": 3,
+    "inputs": {
+      "slide_count": "8",
+      "video_style": "professional paid-course style, clear and beginner-friendly",
+      "highlight_style": "orange_box",
+      "generation_goal": "Generate a complete course-style PPT production JSON that can be composed directly into video."
+    },
+    "files": [
+      {
+        "input_name": "source_doc",
+        "path": "",
+        "type": "document",
+        "transfer_method": "local_file",
+        "as_list": true,
+        "fallback_to_text": true,
+        "max_text_chars": 120000,
+        "trust_env_proxy": true,
+        "proxy": "",
+        "network_retries": 3
+      }
+    ],
+    "output_key": "",
+    "output_json": "outputs/dify/production_json.json",
+    "raw_response": "outputs/dify/raw_response.json"
+  },
+  "input_json": "outputs/dify/production_json.json",
+  "asset_prefix": "../../html-ppt-skill",
+  "deck_dir": "html_deck_obsidian",
+  "frames_dir": "outputs/html_obsidian_slides",
+  "video_dir": "outputs/html_video",
+  "chrome": "C:/Program Files/Google/Chrome/Application/chrome.exe",
+  "slide_size": {
+    "width": 1920,
+    "height": 1080
+  },
+  "capture": {
+    "include_highlights": true,
+    "skip_if_manifest_exists": false
+  },
+  "tts": {
+    "provider": "dashscope",
+    "force": false,
+    "audio_granularity": "segment",
+    "segment_gap": 0.18,
+    "slide_pause": 0.45,
+    "dashscope_model": "cosyvoice-v3.5-plus",
+    "dashscope_voice_id_file": "",
+    "dashscope_voice_id": "",
+    "dashscope_instruction": "Speak like a calm professional online-course lecturer with natural pauses."
+  },
+  "voice_design": {
+    "enabled": false,
+    "voice_id_output": "outputs/voice_samples/auto_lecturer_voice_id.txt",
+    "preview_output": "outputs/voice_samples/auto_lecturer_preview.wav",
+    "target_model": "cosyvoice-v3.5-plus",
+    "prefix": "lecturer_auto",
+    "voice_prompt": "Original Mandarin male online-course lecturer, age 35 to 45, calm, warm, natural, clear articulation, realistic pauses, professional but conversational. Do not imitate any real person.",
+    "preview_slide_id": 1
+  }
+}

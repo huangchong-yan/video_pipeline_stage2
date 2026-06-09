@@ -1,0 +1,36 @@
+# Local configuration and secrets
+pipeline_config.json
+.env
+.env.*
+!.env.example
+
+# Generated decks and outputs
+outputs/
+html_deck/
+html_deck_obsidian/
+
+# Python cache and tooling
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Generated media and temporary files
+*.mp4
+*.mov
+*.mp3
+*.wav
+*.m4a
+*.aac
+*.png
+*.jpg
+*.jpeg
+*.log
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
