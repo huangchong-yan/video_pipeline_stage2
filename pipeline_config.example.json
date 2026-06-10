@@ -33,6 +33,29 @@
     "output_json": "outputs/dify/production_json.json",
     "raw_response": "outputs/dify/raw_response.json"
   },
+  "llm": {
+    "enabled": false,
+    "provider": "openai",
+    "model": "gpt-4.1",
+    "api_key_env": "OPENAI_API_KEY",
+    "source_document": "",
+    "output_json": "outputs/llm/production_json.json",
+    "raw_response": "outputs/llm/raw_response.json",
+    "max_text_chars": 120000,
+    "temperature": 0.2,
+    "max_output_tokens": 12000,
+    "timeout": 600,
+    "trust_env_proxy": true,
+    "proxy": "",
+    "network_retries": 3,
+    "inputs": {
+      "slide_count": "8",
+      "video_style": "professional paid-course style, clear and beginner-friendly",
+      "highlight_style": "orange_box",
+      "generation_goal": "Generate a complete course-style PPT production JSON that can be composed directly into video."
+    },
+    "system_prompt": "You are a senior instructional designer. Return only valid JSON that follows the requested schema."
+  },
   "input_json": "outputs/dify/production_json.json",
   "asset_prefix": "../../html-ppt-skill",
   "deck_dir": "html_deck_obsidian",
@@ -51,12 +74,19 @@
     "provider": "dashscope",
     "force": false,
     "audio_granularity": "segment",
+    "proxy": "",
+    "edge_voice": "zh-CN-YunxiNeural",
+    "edge_rate": "+0%",
+    "sapi_voice": "Microsoft Huihui Desktop",
     "segment_gap": 0.18,
     "slide_pause": 0.45,
     "dashscope_model": "cosyvoice-v3.5-plus",
     "dashscope_voice_id_file": "",
     "dashscope_voice_id": "",
-    "dashscope_instruction": "Speak like a calm professional online-course lecturer with natural pauses."
+    "dashscope_instruction": "Speak like a calm professional online-course lecturer with natural pauses.",
+    "openai_tts_model": "gpt-4o-mini-tts",
+    "openai_voice": "alloy",
+    "openai_instructions": "Speak like a calm professional online-course lecturer with natural pauses."
   },
   "voice_design": {
     "enabled": false,

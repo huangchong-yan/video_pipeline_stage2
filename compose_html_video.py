@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -94,6 +95,10 @@ async def synthesize_slide_audio(
     dashscope_voice_id: str,
     dashscope_model: str,
     dashscope_instruction: str,
+    openai_tts_model: str,
+    openai_voice: str,
+    openai_instructions: str,
+    tts_proxy: str,
 ) -> list[Path]:
     audio_dir.mkdir(parents=True, exist_ok=True)
     audio_files: list[Path] = []
@@ -108,7 +113,7 @@ async def synthesize_slide_audio(
         text = slide.get("tts_script") or slide.get("speaker_script") or slide["title"]
         meta_path = audio_path.with_suffix(".meta.json")
         cache_payload = {
-            "cache_version": 2,
+            "cache_version": 3,
             "provider": provider,
             "text": text,
             "voice": voice,
@@ -117,42 +122,32 @@ async def synthesize_slide_audio(
             "dashscope_voice_id": dashscope_voice_id,
             "dashscope_model": dashscope_model,
             "dashscope_instruction": dashscope_instruction,
+            "openai_tts_model": openai_tts_model,
+            "openai_voice": openai_voice,
+            "openai_instructions": openai_instructions,
+            "tts_proxy": tts_proxy,
             "slide_id": slide_id,
         }
         if not force and audio_cache_valid(audio_path, meta_path, cache_payload):
             continue
 
-        if provider == "sapi":
-            synthesize_sapi_audio(text, audio_path, sapi_voice, ffmpeg)
-            write_audio_cache_meta(meta_path, cache_payload)
-            continue
-        if provider == "dashscope":
-            synthesize_dashscope_audio(
-                text=text,
-                audio_path=audio_path,
-                voice_id=dashscope_voice_id,
-                model=dashscope_model,
-                instruction=dashscope_instruction,
-            )
-            write_audio_cache_meta(meta_path, cache_payload)
-            continue
-
-        import edge_tts
-        last_error: Exception | None = None
-        for attempt in range(1, 4):
-            try:
-                communicate = edge_tts.Communicate(text, voice=voice, rate=rate)
-                await communicate.save(str(audio_path))
-                if audio_path.exists() and audio_path.stat().st_size > 0:
-                    write_audio_cache_meta(meta_path, cache_payload)
-                    break
-            except Exception as exc:  # Edge's websocket service is occasionally flaky.
-                last_error = exc
-                if audio_path.exists() and audio_path.stat().st_size == 0:
-                    audio_path.unlink()
-                await asyncio.sleep(attempt * 2)
-        else:
-            raise RuntimeError(f"Edge TTS failed for slide {slide_id}") from last_error
+        await synthesize_tts_audio(
+            text=text,
+            audio_path=audio_path,
+            provider=provider,
+            voice=voice,
+            rate=rate,
+            sapi_voice=sapi_voice,
+            ffmpeg=ffmpeg,
+            dashscope_voice_id=dashscope_voice_id,
+            dashscope_model=dashscope_model,
+            dashscope_instruction=dashscope_instruction,
+            openai_tts_model=openai_tts_model,
+            openai_voice=openai_voice,
+            openai_instructions=openai_instructions,
+            tts_proxy=tts_proxy,
+        )
+        write_audio_cache_meta(meta_path, cache_payload)
 
     return audio_files
 
@@ -161,21 +156,24 @@ async def synthesize_segment_audio(
     slides: list[dict],
     audio_dir: Path,
     provider: str,
+    voice: str,
+    rate: str,
     force: bool,
     sapi_voice: str,
     ffmpeg: str,
     dashscope_voice_id: str,
     dashscope_model: str,
     dashscope_instruction: str,
+    openai_tts_model: str,
+    openai_voice: str,
+    openai_instructions: str,
+    tts_proxy: str,
     segment_gap: float,
     slide_pause: float,
 ) -> list[AudioUnit]:
     audio_dir.mkdir(parents=True, exist_ok=True)
     units: list[AudioUnit] = []
     last_slide_id = int(slides[-1]["slide_id"])
-
-    if provider != "dashscope":
-        raise RuntimeError("--audio-granularity segment currently supports --tts-provider dashscope.")
 
     for slide in slides:
         slide_id = int(slide["slide_id"])
@@ -186,24 +184,40 @@ async def synthesize_segment_audio(
             audio_path = audio_dir / f"slide_{slide_id:02d}_seg_{idx:02d}.mp3"
             meta_path = audio_path.with_suffix(".meta.json")
             cache_payload = {
-                "cache_version": 2,
+                "cache_version": 3,
                 "provider": provider,
                 "text": text,
+                "voice": openai_voice if provider == "openai" else voice,
+                "rate": rate,
+                "sapi_voice": sapi_voice,
                 "voice_id": dashscope_voice_id,
                 "model": dashscope_model,
                 "instruction": dashscope_instruction,
+                "openai_tts_model": openai_tts_model,
+                "openai_voice": openai_voice,
+                "openai_instructions": openai_instructions,
+                "tts_proxy": tts_proxy,
                 "slide_id": slide_id,
                 "segment_index": idx,
             }
             if audio_path.exists() and audio_path.stat().st_size == 0:
                 audio_path.unlink()
             if force or not audio_cache_valid(audio_path, meta_path, cache_payload):
-                synthesize_dashscope_audio(
+                await synthesize_tts_audio(
                     text=text,
                     audio_path=audio_path,
-                    voice_id=dashscope_voice_id,
-                    model=dashscope_model,
-                    instruction=dashscope_instruction,
+                    provider=provider,
+                    voice=voice,
+                    rate=rate,
+                    sapi_voice=sapi_voice,
+                    ffmpeg=ffmpeg,
+                    dashscope_voice_id=dashscope_voice_id,
+                    dashscope_model=dashscope_model,
+                    dashscope_instruction=dashscope_instruction,
+                    openai_tts_model=openai_tts_model,
+                    openai_voice=openai_voice,
+                    openai_instructions=openai_instructions,
+                    tts_proxy=tts_proxy,
                 )
                 write_audio_cache_meta(meta_path, cache_payload)
             units.append(
@@ -259,8 +273,70 @@ def naturalize_tts_text(text: str) -> str:
     return cleaned
 
 
-def synthesize_dashscope_audio(text: str, audio_path: Path, voice_id: str, model: str, instruction: str) -> None:
-    import os
+async def synthesize_tts_audio(
+    text: str,
+    audio_path: Path,
+    provider: str,
+    voice: str,
+    rate: str,
+    sapi_voice: str,
+    ffmpeg: str,
+    dashscope_voice_id: str,
+    dashscope_model: str,
+    dashscope_instruction: str,
+    openai_tts_model: str,
+    openai_voice: str,
+    openai_instructions: str,
+    tts_proxy: str,
+) -> None:
+    if provider == "sapi":
+        synthesize_sapi_audio(text, audio_path, sapi_voice, ffmpeg)
+        return
+    if provider == "dashscope":
+        synthesize_dashscope_audio(
+            text=text,
+            audio_path=audio_path,
+            voice_id=dashscope_voice_id,
+            model=dashscope_model,
+            instruction=dashscope_instruction,
+            proxy=tts_proxy,
+        )
+        return
+    if provider == "openai":
+        synthesize_openai_audio(
+            text=text,
+            audio_path=audio_path,
+            model=openai_tts_model,
+            voice=openai_voice,
+            instructions=openai_instructions,
+            proxy=tts_proxy,
+        )
+        return
+    if provider != "edge":
+        raise RuntimeError(f"Unsupported TTS provider: {provider}")
+
+    import edge_tts
+
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            communicate = edge_tts.Communicate(text, voice=voice, rate=rate)
+            await communicate.save(str(audio_path))
+            if audio_path.exists() and audio_path.stat().st_size > 0:
+                return
+        except Exception as exc:  # Edge's websocket service is occasionally flaky.
+            last_error = exc
+            if audio_path.exists() and audio_path.stat().st_size == 0:
+                audio_path.unlink()
+            await asyncio.sleep(attempt * 2)
+    raise RuntimeError("Edge TTS failed") from last_error
+
+
+def request_proxy_kwargs(proxy: str) -> dict:
+    return {"proxies": {"http": proxy, "https": proxy}} if proxy else {}
+
+
+def synthesize_dashscope_audio(text: str, audio_path: Path, voice_id: str, model: str, instruction: str, proxy: str = "") -> None:
     import requests
 
     api_key = os.environ.get("DASHSCOPE_API_KEY")
@@ -289,16 +365,45 @@ def synthesize_dashscope_audio(text: str, audio_path: Path, voice_id: str, model
         headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
         json=payload,
         timeout=180,
+        **request_proxy_kwargs(proxy),
     )
     if not response.ok:
         raise RuntimeError(f"DashScope TTS failed: {response.status_code} {response.text[:500]}")
 
     data = response.json()
     audio_url = data["output"]["audio"]["url"]
-    audio_response = requests.get(audio_url, timeout=180)
+    audio_response = requests.get(audio_url, timeout=180, **request_proxy_kwargs(proxy))
     if not audio_response.ok:
         raise RuntimeError(f"DashScope audio download failed: {audio_response.status_code}")
     audio_path.write_bytes(audio_response.content)
+
+
+def synthesize_openai_audio(text: str, audio_path: Path, model: str, voice: str, instructions: str, proxy: str = "") -> None:
+    import requests
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is required for --tts-provider openai.")
+
+    payload = {
+        "model": model,
+        "voice": voice,
+        "input": text,
+        "response_format": "mp3",
+    }
+    if instructions:
+        payload["instructions"] = instructions
+
+    response = requests.post(
+        "https://api.openai.com/v1/audio/speech",
+        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
+        json=payload,
+        timeout=180,
+        **request_proxy_kwargs(proxy),
+    )
+    if not response.ok:
+        raise RuntimeError(f"OpenAI TTS failed: {response.status_code} {response.text[:500]}")
+    audio_path.write_bytes(response.content)
 
 
 def synthesize_sapi_audio(text: str, audio_path: Path, voice_name: str, ffmpeg: str) -> None:
@@ -782,7 +887,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", type=Path, default=PROJECT_ROOT / "outputs" / "html_video")
     parser.add_argument("--voice", default="zh-CN-YunxiNeural")
     parser.add_argument("--rate", default="+0%")
-    parser.add_argument("--tts-provider", choices=["auto", "edge", "sapi", "dashscope"], default="auto")
+    parser.add_argument("--tts-provider", choices=["auto", "edge", "sapi", "dashscope", "openai"], default="auto")
     parser.add_argument("--sapi-voice", default="Microsoft Huihui Desktop")
     parser.add_argument("--dashscope-voice-id", default="")
     parser.add_argument("--dashscope-model", default="cosyvoice-v3.5-plus")
@@ -790,6 +895,13 @@ def parse_args() -> argparse.Namespace:
         "--dashscope-instruction",
         default="Speak like a calm professional online-course lecturer with natural pauses.",
     )
+    parser.add_argument("--openai-tts-model", default="gpt-4o-mini-tts")
+    parser.add_argument("--openai-voice", default="alloy")
+    parser.add_argument(
+        "--openai-instructions",
+        default="Speak like a calm professional online-course lecturer with natural pauses.",
+    )
+    parser.add_argument("--tts-proxy", default="")
     parser.add_argument("--audio-granularity", choices=["slide", "segment"], default="slide")
     parser.add_argument("--segment-gap", type=float, default=0.16)
     parser.add_argument("--pause", type=float, default=0.35)
@@ -812,12 +924,18 @@ def main() -> None:
                 slides=deck["slides"],
                 audio_dir=args.out_dir / "audio",
                 provider="edge" if args.tts_provider == "auto" else args.tts_provider,
+                voice=args.voice,
+                rate=args.rate,
                 force=args.force_tts,
                 sapi_voice=args.sapi_voice,
                 ffmpeg=ffmpeg,
                 dashscope_voice_id=args.dashscope_voice_id,
                 dashscope_model=args.dashscope_model,
                 dashscope_instruction=args.dashscope_instruction,
+                openai_tts_model=args.openai_tts_model,
+                openai_voice=args.openai_voice,
+                openai_instructions=args.openai_instructions,
+                tts_proxy=args.tts_proxy,
                 segment_gap=args.segment_gap,
                 slide_pause=args.pause,
             )
@@ -844,6 +962,10 @@ def main() -> None:
                     dashscope_voice_id=args.dashscope_voice_id,
                     dashscope_model=args.dashscope_model,
                     dashscope_instruction=args.dashscope_instruction,
+                    openai_tts_model=args.openai_tts_model,
+                    openai_voice=args.openai_voice,
+                    openai_instructions=args.openai_instructions,
+                    tts_proxy=args.tts_proxy,
                 )
             )
         except Exception:
@@ -863,6 +985,10 @@ def main() -> None:
                     dashscope_voice_id=args.dashscope_voice_id,
                     dashscope_model=args.dashscope_model,
                     dashscope_instruction=args.dashscope_instruction,
+                    openai_tts_model=args.openai_tts_model,
+                    openai_voice=args.openai_voice,
+                    openai_instructions=args.openai_instructions,
+                    tts_proxy=args.tts_proxy,
                 )
             )
 

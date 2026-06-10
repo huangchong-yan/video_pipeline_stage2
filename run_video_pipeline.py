@@ -10,7 +10,9 @@ import shutil
 import subprocess
 import sys
 import time
+import zipfile
 from pathlib import Path
+from xml.etree import ElementTree
 
 
 ROOT = Path(__file__).resolve().parent
@@ -133,6 +135,258 @@ def select_dify_output(response: dict, output_key: str = ""):
             except Exception:
                 continue
     raise SystemExit("Could not find a JSON-like value in Dify data.outputs. Set dify.output_key in config.")
+
+
+def run_llm_stage(config: dict) -> Path:
+    llm = config.get("llm", {})
+    if not llm.get("enabled", False):
+        return as_path(config["input_json"])
+
+    provider = llm.get("provider", "openai").lower()
+    model = llm.get("model", "").strip()
+    if not model:
+        raise SystemExit("llm.model is required when llm.enabled=true")
+
+    api_key_env = llm.get("api_key_env") or {
+        "openai": "OPENAI_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+        "claude": "ANTHROPIC_API_KEY",
+        "gemini": "GEMINI_API_KEY",
+    }.get(provider, "")
+    api_key = os.environ.get(api_key_env)
+    if not api_key:
+        raise SystemExit(f"{api_key_env} is required when llm.enabled=true")
+
+    source_document = llm.get("source_document") or first_configured_document(config)
+    if not source_document:
+        raise SystemExit("llm.source_document or dify.files[0].path is required for direct LLM generation.")
+    source_text = extract_document_text(as_path(source_document), max_chars=int(llm.get("max_text_chars", 120_000)))
+
+    inputs = dict(config.get("dify", {}).get("inputs", {}))
+    inputs.update(dict(llm.get("inputs", {})))
+    prompt = build_production_json_prompt(
+        source_text=source_text,
+        slide_count=str(inputs.get("slide_count", "8")),
+        video_style=str(inputs.get("video_style", "")),
+        highlight_style=str(inputs.get("highlight_style", "orange_box")),
+        generation_goal=str(inputs.get("generation_goal", "")),
+    )
+
+    system_prompt = llm.get(
+        "system_prompt",
+        "You are a senior instructional designer. Return only valid JSON that follows the requested schema.",
+    )
+    raw_response_path = as_path(llm.get("raw_response", "outputs/llm/raw_response.json"))
+    output_json_path = as_path(llm.get("output_json", "outputs/llm/production_json.json"))
+    raw_response_path.parent.mkdir(parents=True, exist_ok=True)
+    output_json_path.parent.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n== llm-production-json ==\nprovider={provider} model={model}")
+    if provider == "openai":
+        raw = call_openai_llm(llm, api_key, model, system_prompt, prompt)
+        text = extract_openai_text(raw)
+    elif provider in {"anthropic", "claude"}:
+        raw = call_anthropic_llm(llm, api_key, model, system_prompt, prompt)
+        text = extract_anthropic_text(raw)
+    elif provider == "gemini":
+        raw = call_gemini_llm(llm, api_key, model, system_prompt, prompt)
+        text = extract_gemini_text(raw)
+    else:
+        raise SystemExit(f"Unsupported llm.provider: {provider}")
+
+    parsed = json.loads(extract_json_text(text))
+    write_json(raw_response_path, raw)
+    write_json(output_json_path, parsed)
+    print(f"Wrote LLM raw response to {raw_response_path}")
+    print(f"Wrote LLM production JSON to {output_json_path}")
+    return output_json_path
+
+
+def first_configured_document(config: dict) -> str:
+    for item in config.get("dify", {}).get("files", []) or []:
+        path = (item.get("path") or "").strip()
+        if path:
+            return path
+    return ""
+
+
+def build_production_json_prompt(
+    source_text: str,
+    slide_count: str,
+    video_style: str,
+    highlight_style: str,
+    generation_goal: str,
+) -> str:
+    return f"""
+Generate a complete course-style PPT production JSON from the source document.
+
+Generation goal:
+{generation_goal}
+
+Constraints:
+- slide_count: {slide_count}
+- video_style: {video_style}
+- highlight_style: {highlight_style}
+- Language: Chinese, unless the source document clearly requires another language.
+- Return only JSON. Do not wrap in Markdown.
+- Each slide must include subtitle_segments so the video composer can align subtitles and highlight frames.
+- Every subtitle_segments item should be short enough for one subtitle line or two compact lines.
+- highlight_steps.target_element_id must reference an existing element id in the same slide.
+
+Required JSON shape:
+{{
+  "title": "course title",
+  "slides": [
+    {{
+      "slide_id": 1,
+      "title": "slide title",
+      "layout": "cover | comparison | process | quote | industry",
+      "elements": [
+        {{
+          "id": "s1_item_1",
+          "type": "bullet | card | quote | step | title",
+          "text": "visible slide text"
+        }}
+      ],
+      "speaker_script": "natural lecturer script for this slide",
+      "tts_script": "spoken narration text for this slide",
+      "subtitle_segments": [
+        {{
+          "text": "subtitle text",
+          "related_element_id": "s1_item_1"
+        }}
+      ],
+      "highlight_steps": [
+        {{
+          "target_element_id": "s1_item_1"
+        }}
+      ]
+    }}
+  ]
+}}
+
+Source document:
+<<<SOURCE_DOCUMENT
+{source_text}
+SOURCE_DOCUMENT
+>>>
+""".strip()
+
+
+def call_openai_llm(llm: dict, api_key: str, model: str, system_prompt: str, prompt: str) -> dict:
+    base_url = llm.get("base_url", "https://api.openai.com/v1").rstrip("/")
+    payload = {
+        "model": model,
+        "input": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": float(llm.get("temperature", 0.2)),
+    }
+    max_output_tokens = llm.get("max_output_tokens")
+    if max_output_tokens:
+        payload["max_output_tokens"] = int(max_output_tokens)
+    response = request_with_retries(
+        "post",
+        base_url + "/responses",
+        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
+        json=payload,
+        timeout=int(llm.get("timeout", 600)),
+        trust_env=bool(llm.get("trust_env_proxy", True)),
+        proxy=llm.get("proxy", ""),
+        attempts=int(llm.get("network_retries", 3)),
+    )
+    if not response.ok:
+        raise SystemExit(f"OpenAI generation failed: {response.status_code} {response.text[:1000]}")
+    return response.json()
+
+
+def extract_openai_text(raw: dict) -> str:
+    if raw.get("output_text"):
+        return raw["output_text"]
+    chunks: list[str] = []
+    for item in raw.get("output", []):
+        for content in item.get("content", []):
+            if content.get("type") in {"output_text", "text"} and content.get("text"):
+                chunks.append(content["text"])
+    if not chunks:
+        raise SystemExit("OpenAI response did not contain output text.")
+    return "\n".join(chunks)
+
+
+def call_anthropic_llm(llm: dict, api_key: str, model: str, system_prompt: str, prompt: str) -> dict:
+    base_url = llm.get("base_url", "https://api.anthropic.com/v1").rstrip("/")
+    payload = {
+        "model": model,
+        "max_tokens": int(llm.get("max_tokens", 8192)),
+        "temperature": float(llm.get("temperature", 0.2)),
+        "system": system_prompt,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    response = request_with_retries(
+        "post",
+        base_url + "/messages",
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": llm.get("anthropic_version", "2023-06-01"),
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=int(llm.get("timeout", 600)),
+        trust_env=bool(llm.get("trust_env_proxy", True)),
+        proxy=llm.get("proxy", ""),
+        attempts=int(llm.get("network_retries", 3)),
+    )
+    if not response.ok:
+        raise SystemExit(f"Anthropic generation failed: {response.status_code} {response.text[:1000]}")
+    return response.json()
+
+
+def extract_anthropic_text(raw: dict) -> str:
+    chunks = [item.get("text", "") for item in raw.get("content", []) if item.get("type") == "text"]
+    if not chunks:
+        raise SystemExit("Anthropic response did not contain text content.")
+    return "\n".join(chunks)
+
+
+def call_gemini_llm(llm: dict, api_key: str, model: str, system_prompt: str, prompt: str) -> dict:
+    base_url = llm.get("base_url", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+    url = f"{base_url}/models/{model}:generateContent?key={api_key}"
+    payload = {
+        "systemInstruction": {"parts": [{"text": system_prompt}]},
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": float(llm.get("temperature", 0.2)),
+        },
+    }
+    max_output_tokens = llm.get("max_output_tokens")
+    if max_output_tokens:
+        payload["generationConfig"]["maxOutputTokens"] = int(max_output_tokens)
+    response = request_with_retries(
+        "post",
+        url,
+        headers={"Content-Type": "application/json"},
+        json=payload,
+        timeout=int(llm.get("timeout", 600)),
+        trust_env=bool(llm.get("trust_env_proxy", True)),
+        proxy=llm.get("proxy", ""),
+        attempts=int(llm.get("network_retries", 3)),
+    )
+    if not response.ok:
+        raise SystemExit(f"Gemini generation failed: {response.status_code} {response.text[:1000]}")
+    return response.json()
+
+
+def extract_gemini_text(raw: dict) -> str:
+    candidates = raw.get("candidates") or []
+    chunks: list[str] = []
+    for candidate in candidates:
+        for part in candidate.get("content", {}).get("parts", []):
+            if part.get("text"):
+                chunks.append(part["text"])
+    if not chunks:
+        raise SystemExit("Gemini response did not contain text content.")
+    return "\n".join(chunks)
 
 
 def run_dify_stage(config: dict) -> Path:
@@ -434,12 +688,14 @@ def extract_document_text(file_path: Path, max_chars: int) -> str:
     suffix = file_path.suffix.lower()
     if suffix == ".pdf":
         return extract_pdf_text(file_path, max_chars=max_chars)
+    if suffix == ".docx":
+        return extract_docx_text(file_path, max_chars=max_chars)
     if suffix in {".txt", ".md", ".csv", ".json", ".html", ".xml"}:
         text = file_path.read_text(encoding="utf-8", errors="ignore")
         return truncate_text(text, max_chars)
     raise SystemExit(
         f"Dify rejected upload and local text fallback does not support {suffix}. "
-        "Use PDF/TXT/MD/CSV/JSON/HTML/XML, or enable this file type in Dify."
+        "Use DOCX/PDF/TXT/MD/CSV/JSON/HTML/XML, or enable this file type in Dify."
     )
 
 
@@ -464,6 +720,22 @@ def extract_pdf_text(file_path: Path, max_chars: int) -> str:
     if not chunks:
         raise SystemExit(f"No extractable text found in PDF: {file_path}")
     return truncate_text("".join(chunks), max_chars)
+
+
+def extract_docx_text(file_path: Path, max_chars: int) -> str:
+    namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    chunks: list[str] = []
+    with zipfile.ZipFile(file_path) as docx:
+        with docx.open("word/document.xml") as handle:
+            root = ElementTree.parse(handle).getroot()
+    for paragraph in root.findall(".//w:p", namespace):
+        texts = [node.text or "" for node in paragraph.findall(".//w:t", namespace)]
+        line = "".join(texts).strip()
+        if line:
+            chunks.append(line)
+    if not chunks:
+        raise SystemExit(f"No extractable text found in DOCX: {file_path}")
+    return truncate_text("\n".join(chunks), max_chars)
 
 
 def truncate_text(text: str, max_chars: int) -> str:
@@ -574,6 +846,7 @@ def run_capture_stage(config: dict, deck_dir: Path, frames_dir: Path) -> None:
 
 def run_compose_stage(config: dict, deck_dir: Path, frames_dir: Path, video_dir: Path, voice_id: str) -> None:
     tts = config.get("tts", {})
+    provider = tts.get("provider", "dashscope")
     ensure_clean_dir(video_dir, clean=False)
     cmd = [
         sys.executable,
@@ -587,16 +860,24 @@ def run_compose_stage(config: dict, deck_dir: Path, frames_dir: Path, video_dir:
         "--out-dir",
         str(video_dir),
         "--tts-provider",
-        tts.get("provider", "dashscope"),
+        provider,
         "--audio-granularity",
         tts.get("audio_granularity", "segment"),
         "--segment-gap",
         str(float(tts.get("segment_gap", 0.18))),
         "--pause",
         str(float(tts.get("slide_pause", 0.45))),
+        "--voice",
+        tts.get("edge_voice", tts.get("voice", "zh-CN-YunxiNeural")),
+        "--rate",
+        tts.get("edge_rate", tts.get("rate", "+0%")),
+        "--sapi-voice",
+        tts.get("sapi_voice", "Microsoft Huihui Desktop"),
     ]
+    if tts.get("proxy"):
+        cmd.extend(["--tts-proxy", tts.get("proxy", "")])
 
-    if tts.get("provider", "dashscope") == "dashscope":
+    if provider == "dashscope":
         cmd.extend(
             [
                 "--dashscope-model",
@@ -607,6 +888,17 @@ def run_compose_stage(config: dict, deck_dir: Path, frames_dir: Path, video_dir:
                 tts.get("dashscope_instruction", "Speak like a calm professional online-course lecturer with natural pauses."),
             ]
         )
+    if provider == "openai":
+        cmd.extend(
+            [
+                "--openai-tts-model",
+                tts.get("openai_tts_model", "gpt-4o-mini-tts"),
+                "--openai-voice",
+                tts.get("openai_voice", "alloy"),
+                "--openai-instructions",
+                tts.get("openai_instructions", "Speak like a calm professional online-course lecturer with natural pauses."),
+            ]
+        )
     if tts.get("force", False):
         cmd.append("--force-tts")
     run_step("compose-video", cmd)
@@ -615,9 +907,14 @@ def run_compose_stage(config: dict, deck_dir: Path, frames_dir: Path, video_dir:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the HTML slide to narrated MP4 pipeline.")
     parser.add_argument("--config", type=Path, default=ROOT / "pipeline_config.example.json")
-    parser.add_argument("--stage", choices=["all", "dify", "deck", "capture", "compose"], default="all")
+    parser.add_argument("--stage", choices=["all", "dify", "llm", "deck", "capture", "compose"], default="all")
     parser.add_argument("--input-json", type=Path, help="Override config input_json")
     parser.add_argument("--enable-dify", action="store_true", help="Override config dify.enabled=true")
+    parser.add_argument("--enable-llm", action="store_true", help="Override config llm.enabled=true")
+    parser.add_argument("--llm-provider", choices=["openai", "anthropic", "claude", "gemini"], help="Direct content generation provider.")
+    parser.add_argument("--llm-model", help="Direct content generation model name.")
+    parser.add_argument("--llm-api-key-env", help="Environment variable that contains the direct LLM API key.")
+    parser.add_argument("--llm-source-document", type=Path, help="Source document for direct LLM generation.")
     parser.add_argument("--topic", help="Override dify.inputs.topic")
     parser.add_argument("--audience", help="Override dify.inputs.audience")
     parser.add_argument("--slide-count", help="Override dify.inputs.slide_count")
@@ -637,6 +934,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dify-response-mode", choices=["blocking", "streaming"], help="Override Dify workflow response_mode")
     parser.add_argument("--dify-proxy", help="Explicit proxy for Dify requests, e.g. http://127.0.0.1:7897")
     parser.add_argument("--dify-no-proxy", action="store_true", help="Do not let requests read proxy settings from environment.")
+    parser.add_argument("--tts-provider", choices=["auto", "edge", "sapi", "dashscope", "openai"], help="Override config tts.provider")
+    parser.add_argument("--tts-audio-granularity", choices=["slide", "segment"], help="Override config tts.audio_granularity")
+    parser.add_argument("--tts-proxy", help="Explicit proxy for TTS HTTP requests, e.g. http://127.0.0.1:7897")
+    parser.add_argument("--openai-tts-model", help="Override config tts.openai_tts_model")
+    parser.add_argument("--openai-voice", help="Override config tts.openai_voice")
     parser.add_argument("--force-tts", action="store_true", help="Override config tts.force=true")
     parser.add_argument("--skip-capture-if-exists", action="store_true")
     return parser.parse_args()
@@ -663,8 +965,29 @@ def parse_scalar(value: str):
 def apply_runtime_overrides(config: dict, args: argparse.Namespace) -> None:
     if args.enable_dify:
         config.setdefault("dify", {})["enabled"] = True
+    if args.enable_llm:
+        config.setdefault("llm", {})["enabled"] = True
+        config.setdefault("dify", {})["enabled"] = False
+    if args.llm_provider is not None:
+        config.setdefault("llm", {})["provider"] = args.llm_provider
+    if args.llm_model is not None:
+        config.setdefault("llm", {})["model"] = args.llm_model
+    if args.llm_api_key_env is not None:
+        config.setdefault("llm", {})["api_key_env"] = args.llm_api_key_env
+    if args.llm_source_document is not None:
+        config.setdefault("llm", {})["source_document"] = str(args.llm_source_document)
     if args.force_tts:
         config.setdefault("tts", {})["force"] = True
+    if args.tts_provider is not None:
+        config.setdefault("tts", {})["provider"] = args.tts_provider
+    if args.tts_audio_granularity is not None:
+        config.setdefault("tts", {})["audio_granularity"] = args.tts_audio_granularity
+    if args.tts_proxy is not None:
+        config.setdefault("tts", {})["proxy"] = args.tts_proxy
+    if args.openai_tts_model is not None:
+        config.setdefault("tts", {})["openai_tts_model"] = args.openai_tts_model
+    if args.openai_voice is not None:
+        config.setdefault("tts", {})["openai_voice"] = args.openai_voice
     if args.skip_capture_if_exists:
         config.setdefault("capture", {})["skip_if_manifest_exists"] = True
     if args.dify_output_key is not None:
@@ -731,7 +1054,12 @@ def main() -> None:
     frames_dir = as_path(config.get("frames_dir", ROOT / "outputs/html_obsidian_slides"))
     video_dir = as_path(config.get("video_dir", ROOT / "outputs/html_video"))
 
-    if args.stage in {"all", "dify"} and config.get("dify", {}).get("enabled", False):
+    if args.stage in {"all", "llm"} and config.get("llm", {}).get("enabled", False):
+        input_json = run_llm_stage(config)
+    elif args.stage == "llm":
+        print("LLM stage is disabled in config; nothing to run.")
+        return
+    elif args.stage in {"all", "dify"} and config.get("dify", {}).get("enabled", False):
         input_json = run_dify_stage(config)
     elif args.stage == "dify":
         print("Dify stage is disabled in config; nothing to run.")

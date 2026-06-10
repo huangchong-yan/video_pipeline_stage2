@@ -1,11 +1,11 @@
 # Dify-to-Video Pipeline
 
-This project turns a Dify Workflow output into a narrated course-style video.
+This project turns a source document into a narrated course-style video.
 
 Pipeline:
 
 ```text
-Dify Workflow -> production JSON -> HTML slides -> slide screenshots -> TTS -> subtitles -> MP4
+Source document -> Dify or direct LLM -> production JSON -> HTML slides -> screenshots -> TTS -> subtitles -> MP4
 ```
 
 Generated outputs are intentionally ignored by Git.
@@ -28,7 +28,8 @@ Do not commit:
 - Python 3.10+
 - Google Chrome, for headless slide screenshots
 - A Dify application API key, if using Dify
-- A DashScope API key, if using DashScope TTS
+- An OpenAI, Anthropic/Claude, or Gemini API key, if using direct LLM generation
+- A DashScope or OpenAI API key, if using those TTS providers
 - The HTML slide assets referenced by `asset_prefix`, currently `../html-ppt-skill` from this project directory
 
 Install Python dependencies:
@@ -50,9 +51,12 @@ Set API keys in the shell. Do not put keys in JSON files.
 ```powershell
 $env:DIFY_API_KEY = "app-..."
 $env:DASHSCOPE_API_KEY = "sk-..."
+$env:OPENAI_API_KEY = "..."
+$env:ANTHROPIC_API_KEY = "..."
+$env:GEMINI_API_KEY = "..."
 ```
 
-## Full Run
+## Full Run With Dify
 
 Run with Dify enabled and a local document:
 
@@ -72,6 +76,36 @@ python run_video_pipeline.py `
 If you do not need a proxy, omit `--dify-proxy`.
 
 For long Dify workflows, `--dify-response-mode streaming` is recommended because it is more robust through local proxies than one long blocking request.
+
+## Full Run With Direct LLM
+
+You can skip Dify and generate the production JSON directly with OpenAI, Claude, or Gemini:
+
+```powershell
+python run_video_pipeline.py `
+  --config pipeline_config.json `
+  --enable-llm `
+  --llm-provider openai `
+  --llm-model gpt-4.1 `
+  --llm-source-document "C:\path\to\source.docx" `
+  --stage all
+```
+
+Provider examples:
+
+```powershell
+--llm-provider openai --llm-model gpt-4.1
+--llm-provider claude --llm-model claude-sonnet-4-5
+--llm-provider gemini --llm-model gemini-2.5-pro
+```
+
+The direct LLM path reads DOCX, PDF, TXT, MD, CSV, JSON, HTML, and XML files locally, then asks the selected model to return the same production JSON shape used by the rest of the pipeline.
+
+If the selected provider needs a local proxy, set `llm.proxy` in `pipeline_config.json`, for example:
+
+```json
+"proxy": "http://127.0.0.1:7897"
+```
 
 ## Dify Start Node Inputs
 
@@ -112,6 +146,7 @@ If Dify rejects an uploaded file type, the pipeline can fall back to local text 
 Run only one stage:
 
 ```powershell
+python run_video_pipeline.py --config pipeline_config.json --stage llm
 python run_video_pipeline.py --config pipeline_config.json --stage dify
 python run_video_pipeline.py --config pipeline_config.json --stage deck
 python run_video_pipeline.py --config pipeline_config.json --stage capture
@@ -123,6 +158,22 @@ Force TTS regeneration:
 ```powershell
 python run_video_pipeline.py --config pipeline_config.json --stage compose --force-tts
 ```
+
+Choose a TTS provider:
+
+```powershell
+python run_video_pipeline.py --config pipeline_config.json --stage compose --tts-provider edge --tts-audio-granularity segment --force-tts
+python run_video_pipeline.py --config pipeline_config.json --stage compose --tts-provider openai --openai-tts-model gpt-4o-mini-tts --openai-voice alloy --tts-audio-granularity segment --force-tts
+python run_video_pipeline.py --config pipeline_config.json --stage compose --tts-provider dashscope --tts-audio-granularity segment --force-tts
+```
+
+For HTTP TTS providers such as OpenAI or DashScope, add `--tts-proxy "http://127.0.0.1:7897"` when needed.
+
+Notes:
+
+- Claude is used for PPT structure and narration text generation only; it is not a TTS provider.
+- `segment` granularity gives better subtitle and highlight timing because each subtitle segment gets its own audio file.
+- `slide` granularity is faster and cheaper, but subtitle timing is estimated inside each slide.
 
 Skip screenshot recapture if the manifest already exists:
 
@@ -156,9 +207,23 @@ Generated under `outputs/`:
 
 These files are ignored by Git.
 
-## Voice Notes
+## Model Notes
 
-The project supports DashScope TTS and optional DashScope voice design.
+Content generation providers:
+
+- `dify`: use your Dify Workflow as the orchestration layer.
+- `openai`: call the OpenAI Responses API directly.
+- `claude` / `anthropic`: call the Anthropic Messages API directly.
+- `gemini`: call the Gemini Generate Content API directly.
+
+TTS providers:
+
+- `edge`: convenient local/free fallback through `edge-tts`.
+- `sapi`: Windows built-in speech fallback.
+- `dashscope`: DashScope CosyVoice-compatible API.
+- `openai`: OpenAI audio speech API.
+
+The project supports optional DashScope voice design.
 
 Voice prompts must describe an original voice style only. Do not request imitation of a real person.
 
