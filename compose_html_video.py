@@ -2,18 +2,26 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import hashlib
 import json
 import os
 import shutil
+import socket
+import struct
 import subprocess
+import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote, urlparse
+from urllib.request import urlopen
 
 from PIL import Image, ImageDraw, ImageFont
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_CHROME = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
 
 
 @dataclass
@@ -23,8 +31,11 @@ class Segment:
     subtitle: str
     slide_id: int
     segment_index: int
+    related_element_id: str = ""
     start: float = 0.0
     end: float = 0.0
+    transition_to: Path | None = None
+    video: Path | None = None
 
 
 @dataclass
@@ -125,7 +136,6 @@ async def synthesize_slide_audio(
             "openai_tts_model": openai_tts_model,
             "openai_voice": openai_voice,
             "openai_instructions": openai_instructions,
-            "tts_proxy": tts_proxy,
             "slide_id": slide_id,
         }
         if not force and audio_cache_valid(audio_path, meta_path, cache_payload):
@@ -183,23 +193,31 @@ async def synthesize_segment_audio(
             text = naturalize_tts_text(subtitle["text"])
             audio_path = audio_dir / f"slide_{slide_id:02d}_seg_{idx:02d}.mp3"
             meta_path = audio_path.with_suffix(".meta.json")
-            cache_payload = {
-                "cache_version": 3,
-                "provider": provider,
-                "text": text,
-                "voice": openai_voice if provider == "openai" else voice,
-                "rate": rate,
-                "sapi_voice": sapi_voice,
-                "voice_id": dashscope_voice_id,
-                "model": dashscope_model,
-                "instruction": dashscope_instruction,
-                "openai_tts_model": openai_tts_model,
-                "openai_voice": openai_voice,
-                "openai_instructions": openai_instructions,
-                "tts_proxy": tts_proxy,
-                "slide_id": slide_id,
-                "segment_index": idx,
-            }
+            if provider == "dashscope":
+                cache_payload = {
+                    "cache_version": 2,
+                    "provider": provider,
+                    "text": text,
+                    "voice_id": dashscope_voice_id,
+                    "model": dashscope_model,
+                    "instruction": dashscope_instruction,
+                    "slide_id": slide_id,
+                    "segment_index": idx,
+                }
+            else:
+                cache_payload = {
+                    "cache_version": 3,
+                    "provider": provider,
+                    "text": text,
+                    "voice": openai_voice if provider == "openai" else voice,
+                    "rate": rate,
+                    "sapi_voice": sapi_voice,
+                    "openai_tts_model": openai_tts_model,
+                    "openai_voice": openai_voice,
+                    "openai_instructions": openai_instructions,
+                    "slide_id": slide_id,
+                    "segment_index": idx,
+                }
             if audio_path.exists() and audio_path.stat().st_size == 0:
                 audio_path.unlink()
             if force or not audio_cache_valid(audio_path, meta_path, cache_payload):
@@ -528,11 +546,10 @@ def fit_subtitle(text: str, max_width: int) -> tuple[ImageFont.ImageFont, list[s
     return font, lines[:2]
 
 
-def render_subtitle_frame(source: Path, dest: Path, subtitle: str) -> None:
-    image = Image.open(source).convert("RGBA")
+def add_subtitle_overlay(source: Image.Image, subtitle: str) -> Image.Image:
+    image = source.convert("RGBA")
     if not subtitle.strip():
-        image.convert("RGB").save(dest, quality=95)
-        return
+        return image.convert("RGB")
 
     width, height = image.size
     panel_width = int(width * 0.82)
@@ -569,7 +586,12 @@ def render_subtitle_frame(source: Path, dest: Path, subtitle: str) -> None:
         draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
         y += line_height + 14
 
-    image.convert("RGB").save(dest, quality=95)
+    return image.convert("RGB")
+
+
+def render_subtitle_frame(source: Path, dest: Path, subtitle: str) -> None:
+    image = Image.open(source)
+    add_subtitle_overlay(image, subtitle).save(dest, quality=95)
 
 
 def manifest_slide_map(capture_manifest: dict, frames_dir: Path) -> dict[int, dict]:
@@ -601,7 +623,7 @@ def build_segments(
     frame_map = manifest_slide_map(capture_manifest, frames_dir)
     segments: list[Segment] = []
 
-    for slide, audio_file in zip(deck["slides"], audio_files):
+    for slide_index, (slide, audio_file) in enumerate(zip(deck["slides"], audio_files)):
         slide_id = int(slide["slide_id"])
         audio_duration = get_audio_duration(audio_file)
         subtitles = slide.get("subtitle_segments") or [{"text": slide.get("tts_script", ""), "related_element_id": ""}]
@@ -620,12 +642,14 @@ def build_segments(
                     subtitle=subtitle_item["text"],
                     slide_id=slide_id,
                     segment_index=idx,
+                    related_element_id=related_id,
                 )
             )
 
         if pause > 0 and slide_id != int(deck["slides"][-1]["slide_id"]):
             dest = output_frames_dir / f"seg_{len(segments) + 1:04d}.jpg"
             render_subtitle_frame(slide_frames["base"], dest, "")
+            next_slide_id = int(deck["slides"][slide_index + 1]["slide_id"])
             segments.append(
                 Segment(
                     image=dest,
@@ -633,6 +657,8 @@ def build_segments(
                     subtitle="",
                     slide_id=slide_id,
                     segment_index=len(subtitles) + 1,
+                    related_element_id="",
+                    transition_to=frame_map[next_slide_id]["base"],
                 )
             )
 
@@ -656,6 +682,11 @@ def build_segments_from_audio_units(
     output_frames_dir.mkdir(parents=True, exist_ok=True)
 
     frame_map = manifest_slide_map(capture_manifest, frames_dir)
+    slide_ids = sorted(frame_map)
+    next_slide_by_id = {
+        slide_id: slide_ids[idx + 1]
+        for idx, slide_id in enumerate(slide_ids[:-1])
+    }
     segments: list[Segment] = []
 
     for unit in audio_units:
@@ -666,6 +697,9 @@ def build_segments_from_audio_units(
             source = slide_frames["highlight_by_target"].get(unit.related_element_id, slide_frames["base"])
         dest = output_frames_dir / f"seg_{len(segments) + 1:04d}.jpg"
         render_subtitle_frame(source, dest, unit.subtitle)
+        transition_to = None
+        if unit.is_pause and not unit.subtitle.strip() and not unit.related_element_id and unit.slide_id in next_slide_by_id:
+            transition_to = frame_map[next_slide_by_id[unit.slide_id]]["base"]
         segments.append(
             Segment(
                 image=dest,
@@ -673,6 +707,8 @@ def build_segments_from_audio_units(
                 subtitle=unit.subtitle,
                 slide_id=unit.slide_id,
                 segment_index=unit.segment_index,
+                related_element_id=unit.related_element_id,
+                transition_to=transition_to,
             )
         )
 
@@ -720,6 +756,11 @@ def write_image_concat(segments: list[Segment], out_dir: Path, path: Path) -> No
         lines.append(f"duration {segment.duration:.4f}")
     rel = segments[-1].image.relative_to(out_dir).as_posix()
     lines.append(f"file '{rel}'")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_video_concat(videos: list[Path], out_dir: Path, path: Path) -> None:
+    lines = [f"file '{video.relative_to(out_dir).as_posix()}'" for video in videos]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -857,6 +898,674 @@ def compose_video(ffmpeg: str, out_dir: Path, image_concat: Path, narration: Pat
     )
 
 
+def still_video_filter(width: int, height: int, fps: int) -> str:
+    return (
+        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},"
+        f"fps={fps},format=yuv420p"
+    )
+
+
+def render_still_clip(ffmpeg: str, segment: Segment, dest: Path, fps: int, width: int, height: int) -> None:
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-loop",
+            "1",
+            "-i",
+            str(segment.image),
+            "-t",
+            f"{segment.duration:.4f}",
+            "-vf",
+            still_video_filter(width, height, fps),
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            str(dest),
+        ],
+        check=True,
+    )
+    segment.video = dest
+
+
+def render_transition_clip(
+    ffmpeg: str,
+    segment: Segment,
+    dest: Path,
+    fps: int,
+    width: int,
+    height: int,
+    transition: str,
+) -> None:
+    if not segment.transition_to:
+        render_still_clip(ffmpeg, segment, dest, fps=fps, width=width, height=height)
+        return
+    frames_dir = dest.with_suffix("")
+    if frames_dir.exists():
+        shutil.rmtree(frames_dir)
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    frame_count = max(2, int(round(segment.duration * fps)))
+    src = cover_image(Image.open(segment.image).convert("RGB"), width, height)
+    nxt = cover_image(Image.open(segment.transition_to).convert("RGB"), width, height)
+    for frame_no in range(frame_count):
+        progress = frame_no / max(frame_count - 1, 1)
+        frame = transition_frame(src, nxt, progress, transition)
+        frame.save(frames_dir / f"frame_{frame_no + 1:04d}.jpg", quality=94)
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-framerate",
+            str(fps),
+            "-i",
+            str(frames_dir / "frame_%04d.jpg"),
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            str(dest),
+        ],
+        check=True,
+    )
+    segment.video = dest
+
+
+def cover_image(image: Image.Image, width: int, height: int) -> Image.Image:
+    src_w, src_h = image.size
+    scale = max(width / src_w, height / src_h)
+    new_size = (max(width, int(src_w * scale + 0.5)), max(height, int(src_h * scale + 0.5)))
+    resized = image.resize(new_size, Image.Resampling.LANCZOS)
+    left = (resized.width - width) // 2
+    top = (resized.height - height) // 2
+    return resized.crop((left, top, left + width, top + height))
+
+
+def transition_frame(src: Image.Image, nxt: Image.Image, progress: float, transition: str) -> Image.Image:
+    progress = max(0.0, min(1.0, progress))
+    if transition == "fade":
+        return Image.blend(src, nxt, progress)
+
+    frame = src.copy()
+    width, height = src.size
+    if transition == "wiperight":
+        w = int(width * progress)
+        if w > 0:
+            box = (width - w, 0, width, height)
+            frame.paste(nxt.crop(box), box)
+    elif transition == "wipeup":
+        h = int(height * progress)
+        if h > 0:
+            box = (0, height - h, width, height)
+            frame.paste(nxt.crop(box), box)
+    elif transition == "wipedown":
+        h = int(height * progress)
+        if h > 0:
+            box = (0, 0, width, h)
+            frame.paste(nxt.crop(box), box)
+    else:
+        w = int(width * progress)
+        if w > 0:
+            box = (0, 0, w, height)
+            frame.paste(nxt.crop(box), box)
+    return frame
+
+
+def file_url(path: Path, slide_no: int) -> str:
+    resolved = path.resolve()
+    url_path = resolved.as_posix()
+    if not url_path.startswith("/"):
+        url_path = "/" + url_path
+    return f"file://{quote(url_path, safe='/:')}#/{slide_no}"
+
+
+class WebSocketConnection:
+    def __init__(self, url: str):
+        parsed = urlparse(url)
+        if parsed.scheme != "ws":
+            raise ValueError(f"Only ws:// DevTools URLs are supported: {url}")
+        self.sock = socket.create_connection((parsed.hostname, parsed.port or 80), timeout=20)
+        key = base64.b64encode(os.urandom(16)).decode("ascii")
+        path = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+        request = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {parsed.hostname}:{parsed.port or 80}\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n"
+        )
+        self.sock.sendall(request.encode("ascii"))
+        response = self.sock.recv(4096)
+        if b" 101 " not in response.split(b"\r\n", 1)[0]:
+            raise RuntimeError(f"WebSocket handshake failed: {response[:200]!r}")
+
+    def close(self) -> None:
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+    def send_text(self, text: str) -> None:
+        payload = text.encode("utf-8")
+        header = bytearray([0x81])
+        length = len(payload)
+        if length < 126:
+            header.append(0x80 | length)
+        elif length < 65536:
+            header.append(0x80 | 126)
+            header.extend(struct.pack("!H", length))
+        else:
+            header.append(0x80 | 127)
+            header.extend(struct.pack("!Q", length))
+        mask = os.urandom(4)
+        header.extend(mask)
+        masked = bytes(byte ^ mask[idx % 4] for idx, byte in enumerate(payload))
+        self.sock.sendall(bytes(header) + masked)
+
+    def recv_text(self) -> str:
+        chunks: list[bytes] = []
+        while True:
+            first = self._read_exact(1)[0]
+            second = self._read_exact(1)[0]
+            fin = bool(first & 0x80)
+            opcode = first & 0x0F
+            masked = bool(second & 0x80)
+            length = second & 0x7F
+            if length == 126:
+                length = struct.unpack("!H", self._read_exact(2))[0]
+            elif length == 127:
+                length = struct.unpack("!Q", self._read_exact(8))[0]
+            mask = self._read_exact(4) if masked else b""
+            payload = self._read_exact(length) if length else b""
+            if masked:
+                payload = bytes(byte ^ mask[idx % 4] for idx, byte in enumerate(payload))
+            if opcode == 8:
+                raise RuntimeError("DevTools WebSocket closed")
+            if opcode == 9:
+                self._send_control(0xA, payload)
+                continue
+            if opcode in {1, 0}:
+                chunks.append(payload)
+                if fin:
+                    return b"".join(chunks).decode("utf-8")
+
+    def _send_control(self, opcode: int, payload: bytes) -> None:
+        header = bytearray([0x80 | opcode, 0x80 | len(payload)])
+        mask = os.urandom(4)
+        header.extend(mask)
+        masked = bytes(byte ^ mask[idx % 4] for idx, byte in enumerate(payload))
+        self.sock.sendall(bytes(header) + masked)
+
+    def _read_exact(self, size: int) -> bytes:
+        data = bytearray()
+        while len(data) < size:
+            chunk = self.sock.recv(size - len(data))
+            if not chunk:
+                raise RuntimeError("DevTools WebSocket connection ended")
+            data.extend(chunk)
+        return bytes(data)
+
+
+class ChromeDeckCapture:
+    def __init__(self, chrome: Path, deck: Path, width: int, height: int):
+        self.chrome = chrome
+        self.deck = deck
+        self.width = width
+        self.height = height
+        self.port = self._free_port()
+        self.user_data_dir = Path(tempfile.mkdtemp(prefix="deck_chrome_"))
+        self.process: subprocess.Popen | None = None
+        self.ws: WebSocketConnection | None = None
+        self.command_id = 0
+        self.current_slide_id: int | None = None
+
+    def __enter__(self) -> "ChromeDeckCapture":
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def start(self) -> None:
+        self.process = subprocess.Popen(
+            [
+                str(self.chrome),
+                "--headless=new",
+                "--disable-gpu",
+                "--hide-scrollbars",
+                "--allow-file-access-from-files",
+                "--run-all-compositor-stages-before-draw",
+                f"--remote-debugging-port={self.port}",
+                f"--user-data-dir={self.user_data_dir}",
+                f"--window-size={self.width},{self.height}",
+                "about:blank",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        page = self._wait_for_page()
+        self.ws = WebSocketConnection(page["webSocketDebuggerUrl"])
+        self.call("Page.enable")
+        self.call("Runtime.enable")
+        self.call(
+            "Emulation.setDeviceMetricsOverride",
+            {
+                "width": self.width,
+                "height": self.height,
+                "deviceScaleFactor": 1,
+                "mobile": False,
+            },
+        )
+
+    def close(self) -> None:
+        if self.ws:
+            self.ws.close()
+            self.ws = None
+        if self.process and self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+        shutil.rmtree(self.user_data_dir, ignore_errors=True)
+
+    def navigate(self, slide_id: int) -> None:
+        if self.current_slide_id == slide_id:
+            return
+        self.call("Page.navigate", {"url": file_url(self.deck, slide_id)})
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            result = self.call("Runtime.evaluate", {"expression": "document.readyState", "returnByValue": True})
+            if result.get("result", {}).get("value") == "complete":
+                self.current_slide_id = slide_id
+                time.sleep(0.08)
+                return
+            time.sleep(0.05)
+        raise RuntimeError(f"Timed out loading slide {slide_id}")
+
+    def apply_state(
+        self,
+        slide_id: int,
+        visible_element_ids: list[str],
+        entering_element_id: str,
+        highlight_element_id: str,
+        progress: float,
+    ) -> None:
+        self.navigate(slide_id)
+        state = {
+            "slideId": slide_id,
+            "visible": visible_element_ids,
+            "entering": entering_element_id,
+            "highlight": highlight_element_id,
+            "progress": progress,
+        }
+        script = f"""
+(() => {{
+  const state = {json.dumps(state, ensure_ascii=False)};
+  const slides = Array.from(document.querySelectorAll('.slide'));
+  const slide = slides[state.slideId - 1] || document.querySelector('.slide');
+  slides.forEach((item, index) => {{
+    const active = item === slide;
+    item.classList.toggle('is-active', active);
+    item.style.display = active ? '' : 'none';
+  }});
+  if (!slide) return false;
+  const clamp = (value) => Math.max(0, Math.min(1, Number(value) || 0));
+  const easeOut = (value) => 1 - Math.pow(1 - clamp(value), 3);
+  const shown = new Set(state.visible || []);
+  if (state.entering) shown.add(state.entering);
+  slide.querySelectorAll('.is-highlighted').forEach((el) => el.classList.remove('is-highlighted'));
+  slide.querySelectorAll('[data-element-id]').forEach((el) => {{
+    const id = el.dataset.elementId || '';
+    const visible = shown.has(id);
+    el.style.transition = 'none';
+    el.style.willChange = 'opacity, transform, filter';
+    if (!visible) {{
+      el.style.visibility = 'hidden';
+      el.style.opacity = '0';
+      el.style.transform = 'translateY(30px) scale(0.985)';
+      el.style.filter = 'blur(4px)';
+      return;
+    }}
+    const p = id === state.entering ? easeOut(state.progress) : 1;
+    el.style.visibility = 'visible';
+    el.style.opacity = String(p);
+    el.style.transform = `translateY(${{(1 - p) * 30}}px) scale(${{0.985 + p * 0.015}})`;
+    el.style.filter = `blur(${{(1 - p) * 4}}px)`;
+  }});
+  const target = state.highlight ? slide.querySelector(`[data-element-id="${{state.highlight}}"]`) : null;
+  if (target) target.classList.add('is-highlighted');
+  return true;
+}})()
+"""
+        self.call("Runtime.evaluate", {"expression": script, "awaitPromise": False, "returnByValue": True})
+
+    def screenshot(self) -> Image.Image:
+        result = self.call("Page.captureScreenshot", {"format": "jpeg", "quality": 94, "captureBeyondViewport": False})
+        data = base64.b64decode(result["data"])
+        from io import BytesIO
+
+        return Image.open(BytesIO(data)).convert("RGB")
+
+    def call(self, method: str, params: dict | None = None) -> dict:
+        if not self.ws:
+            raise RuntimeError("Chrome DevTools is not connected")
+        self.command_id += 1
+        command_id = self.command_id
+        self.ws.send_text(json.dumps({"id": command_id, "method": method, "params": params or {}}))
+        while True:
+            message = json.loads(self.ws.recv_text())
+            if message.get("id") != command_id:
+                continue
+            if "error" in message:
+                raise RuntimeError(f"CDP {method} failed: {message['error']}")
+            return message.get("result", {})
+
+    def _wait_for_page(self) -> dict:
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            try:
+                with urlopen(f"http://127.0.0.1:{self.port}/json/list", timeout=1) as response:
+                    pages = json.loads(response.read().decode("utf-8"))
+                for page in pages:
+                    if page.get("type") == "page" and page.get("webSocketDebuggerUrl"):
+                        return page
+            except Exception:
+                time.sleep(0.1)
+        raise RuntimeError("Timed out waiting for Chrome DevTools page")
+
+    @staticmethod
+    def _free_port() -> int:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            return int(sock.getsockname()[1])
+
+
+def encode_frame_sequence(ffmpeg: str, frames_dir: Path, fps: int, dest: Path) -> None:
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-framerate",
+            str(fps),
+            "-i",
+            str(frames_dir / "frame_%04d.jpg"),
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            str(dest),
+        ],
+        check=True,
+    )
+
+
+def concat_segment_parts(ffmpeg: str, parts: list[Path], dest: Path) -> None:
+    if len(parts) == 1:
+        shutil.move(str(parts[0]), dest)
+        return
+    concat_file = dest.with_suffix(".txt")
+    concat_file.write_text("\n".join(f"file '{part.as_posix()}'" for part in parts) + "\n", encoding="utf-8")
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_file),
+            "-c",
+            "copy",
+            str(dest),
+        ],
+        check=True,
+    )
+
+
+def render_element_still(
+    ffmpeg: str,
+    capture: ChromeDeckCapture,
+    segment: Segment,
+    visible_ids: list[str],
+    highlight_id: str,
+    image_dir: Path,
+    dest: Path,
+    fps: int,
+    width: int,
+    height: int,
+) -> None:
+    capture.apply_state(segment.slide_id, visible_ids, "", highlight_id, 1)
+    image_path = image_dir / f"seg_{segment.slide_id:02d}_{segment.segment_index:02d}_{len(list(image_dir.glob('*.jpg'))) + 1:04d}.jpg"
+    add_subtitle_overlay(capture.screenshot(), segment.subtitle).save(image_path, quality=95)
+    still_segment = Segment(
+        image=image_path,
+        duration=segment.duration,
+        subtitle=segment.subtitle,
+        slide_id=segment.slide_id,
+        segment_index=segment.segment_index,
+        related_element_id=segment.related_element_id,
+    )
+    render_still_clip(ffmpeg, still_segment, dest, fps=fps, width=width, height=height)
+    segment.video = dest
+
+
+def render_element_entrance_clip(
+    ffmpeg: str,
+    capture: ChromeDeckCapture,
+    segment: Segment,
+    prior_visible_ids: list[str],
+    target_visible_ids: list[str],
+    entering_id: str,
+    highlight_id: str,
+    work_dir: Path,
+    image_dir: Path,
+    dest: Path,
+    fps: int,
+    width: int,
+    height: int,
+    entrance_duration: float,
+) -> None:
+    animation_duration = min(segment.duration, entrance_duration)
+    frame_count = max(2, int(round(animation_duration * fps)))
+    frame_count = min(frame_count, max(2, int(segment.duration * fps)))
+    frames_dir = work_dir / f"{dest.stem}_frames"
+    if frames_dir.exists():
+        shutil.rmtree(frames_dir)
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    for frame_no in range(frame_count):
+        progress = frame_no / max(frame_count - 1, 1)
+        capture.apply_state(segment.slide_id, prior_visible_ids, entering_id, highlight_id, progress)
+        frame = add_subtitle_overlay(capture.screenshot(), segment.subtitle)
+        frame.save(frames_dir / f"frame_{frame_no + 1:04d}.jpg", quality=94)
+
+    animation_clip = work_dir / f"{dest.stem}_enter.mp4"
+    encode_frame_sequence(ffmpeg, frames_dir, fps, animation_clip)
+    parts = [animation_clip]
+    actual_animation_duration = frame_count / fps
+    hold_duration = segment.duration - actual_animation_duration
+    if hold_duration > 0.05:
+        capture.apply_state(segment.slide_id, target_visible_ids, "", highlight_id, 1)
+        final_image = image_dir / f"{dest.stem}_final.jpg"
+        add_subtitle_overlay(capture.screenshot(), segment.subtitle).save(final_image, quality=95)
+        hold_clip = work_dir / f"{dest.stem}_hold.mp4"
+        hold_segment = Segment(
+            image=final_image,
+            duration=hold_duration,
+            subtitle=segment.subtitle,
+            slide_id=segment.slide_id,
+            segment_index=segment.segment_index,
+            related_element_id=segment.related_element_id,
+        )
+        render_still_clip(ffmpeg, hold_segment, hold_clip, fps=fps, width=width, height=height)
+        parts.append(hold_clip)
+    concat_segment_parts(ffmpeg, parts, dest)
+    segment.video = dest
+
+
+def render_ppt_transition_clips(
+    ffmpeg: str,
+    segments: list[Segment],
+    out_dir: Path,
+    fps: int,
+    width: int,
+    height: int,
+    transition: str,
+) -> list[Path]:
+    clips_dir = out_dir / "transition_clips"
+    if clips_dir.exists():
+        shutil.rmtree(clips_dir)
+    clips_dir.mkdir(parents=True, exist_ok=True)
+
+    videos: list[Path] = []
+    for idx, segment in enumerate(segments, start=1):
+        dest = clips_dir / f"clip_{idx:04d}.mp4"
+        if segment.transition_to:
+            render_transition_clip(ffmpeg, segment, dest, fps=fps, width=width, height=height, transition=transition)
+        else:
+            render_still_clip(ffmpeg, segment, dest, fps=fps, width=width, height=height)
+        videos.append(dest)
+    return videos
+
+
+def render_element_entrance_clips(
+    ffmpeg: str,
+    segments: list[Segment],
+    deck_html: Path,
+    chrome: Path,
+    out_dir: Path,
+    fps: int,
+    width: int,
+    height: int,
+    transition: str,
+    entrance_duration: float,
+) -> list[Path]:
+    clips_dir = out_dir / "element_entrance_clips"
+    if clips_dir.exists():
+        shutil.rmtree(clips_dir)
+    clips_dir.mkdir(parents=True, exist_ok=True)
+    state_images = out_dir / "element_entrance_frames"
+    if state_images.exists():
+        shutil.rmtree(state_images)
+    state_images.mkdir(parents=True, exist_ok=True)
+
+    visible_by_slide: dict[int, list[str]] = {}
+    videos: list[Path] = []
+    with ChromeDeckCapture(chrome, deck_html, width, height) as capture:
+        for idx, segment in enumerate(segments, start=1):
+            dest = clips_dir / f"clip_{idx:04d}.mp4"
+            if segment.transition_to:
+                render_transition_clip(ffmpeg, segment, dest, fps=fps, width=width, height=height, transition=transition)
+                videos.append(dest)
+                continue
+
+            visible_ids = visible_by_slide.setdefault(segment.slide_id, [])
+            related_id = segment.related_element_id
+            entering_id = related_id if related_id and related_id not in visible_ids else ""
+            prior_visible = list(visible_ids)
+            if related_id and related_id not in visible_ids:
+                visible_ids.append(related_id)
+            target_visible = list(visible_ids)
+            highlight_id = related_id if segment.subtitle.strip() else ""
+
+            if entering_id:
+                render_element_entrance_clip(
+                    ffmpeg,
+                    capture,
+                    segment,
+                    prior_visible,
+                    target_visible,
+                    entering_id,
+                    highlight_id,
+                    clips_dir,
+                    state_images,
+                    dest,
+                    fps=fps,
+                    width=width,
+                    height=height,
+                    entrance_duration=entrance_duration,
+                )
+            else:
+                render_element_still(
+                    ffmpeg,
+                    capture,
+                    segment,
+                    target_visible,
+                    highlight_id,
+                    state_images,
+                    dest,
+                    fps=fps,
+                    width=width,
+                    height=height,
+                )
+            videos.append(dest)
+    return videos
+
+
+def compose_video_from_clips(ffmpeg: str, out_dir: Path, videos: list[Path], narration: Path, output: Path) -> None:
+    video_concat = out_dir / "video_concat.txt"
+    video_track = out_dir / "video_track_ppt_transition.mp4"
+    write_video_concat(videos, out_dir, video_concat)
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(video_concat),
+            "-c",
+            "copy",
+            str(video_track),
+        ],
+        cwd=out_dir,
+        check=True,
+    )
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-i",
+            str(video_track),
+            "-i",
+            str(narration),
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-movflags",
+            "+faststart",
+            "-shortest",
+            str(output),
+        ],
+        cwd=out_dir,
+        check=True,
+    )
+
+
 def write_compose_manifest(path: Path, segments: list[Segment], narration: Path, output: Path) -> None:
     payload = {
         "output_video": str(output),
@@ -871,6 +1580,9 @@ def write_compose_manifest(path: Path, segments: list[Segment], narration: Path,
                 "end": round(segment.end, 3),
                 "duration": round(segment.duration, 3),
                 "image": str(segment.image),
+                "related_element_id": segment.related_element_id,
+                "transition_to": str(segment.transition_to) if segment.transition_to else "",
+                "video": str(segment.video) if segment.video else "",
                 "subtitle": segment.subtitle,
             }
             for segment in segments
@@ -881,31 +1593,41 @@ def write_compose_manifest(path: Path, segments: list[Segment], narration: Path,
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compose HTML slide screenshots, TTS, highlights, and subtitles into MP4.")
-    parser.add_argument("--data", type=Path, default=PROJECT_ROOT / "html_deck_obsidian" / "deck-data.json")
-    parser.add_argument("--capture-manifest", type=Path, default=PROJECT_ROOT / "outputs" / "html_obsidian_slides" / "capture_manifest.json")
-    parser.add_argument("--frames-dir", type=Path, default=PROJECT_ROOT / "outputs" / "html_obsidian_slides")
-    parser.add_argument("--out-dir", type=Path, default=PROJECT_ROOT / "outputs" / "html_video")
-    parser.add_argument("--voice", default="zh-CN-YunxiNeural")
-    parser.add_argument("--rate", default="+0%")
-    parser.add_argument("--tts-provider", choices=["auto", "edge", "sapi", "dashscope", "openai"], default="auto")
-    parser.add_argument("--sapi-voice", default="Microsoft Huihui Desktop")
-    parser.add_argument("--dashscope-voice-id", default="")
-    parser.add_argument("--dashscope-model", default="cosyvoice-v3.5-plus")
+    parser.add_argument("--data", type=Path, default=PROJECT_ROOT / "html_deck_obsidian" / "deck-data.json", help="Path to deck-data.json.")
+    parser.add_argument("--capture-manifest", type=Path, default=PROJECT_ROOT / "outputs" / "html_obsidian_slides" / "capture_manifest.json", help="Path to screenshot capture_manifest.json.")
+    parser.add_argument("--frames-dir", type=Path, default=PROJECT_ROOT / "outputs" / "html_obsidian_slides", help="Directory containing captured slide PNG files.")
+    parser.add_argument("--out-dir", type=Path, default=PROJECT_ROOT / "outputs" / "html_video", help="Directory for audio, intermediate clips, subtitles, and final MP4.")
+    parser.add_argument("--voice", default="zh-CN-YunxiNeural", help="Edge TTS voice name when --tts-provider is edge or auto.")
+    parser.add_argument("--rate", default="+0%", help="Edge TTS speaking rate, for example +0%%, -10%%, or +15%%.")
+    parser.add_argument("--tts-provider", choices=["auto", "edge", "sapi", "dashscope", "openai"], default="auto", help="TTS backend. auto tries Edge and falls back to SAPI for slide-level audio.")
+    parser.add_argument("--sapi-voice", default="Microsoft Huihui Desktop", help="Windows SAPI voice name used by --tts-provider sapi.")
+    parser.add_argument("--dashscope-voice-id", default="", help="DashScope voice id used by --tts-provider dashscope.")
+    parser.add_argument("--dashscope-model", default="cosyvoice-v3.5-plus", help="DashScope TTS model name.")
     parser.add_argument(
         "--dashscope-instruction",
         default="Speak like a calm professional online-course lecturer with natural pauses.",
+        help="Speaking style instruction sent to DashScope TTS.",
     )
-    parser.add_argument("--openai-tts-model", default="gpt-4o-mini-tts")
-    parser.add_argument("--openai-voice", default="alloy")
+    parser.add_argument("--openai-tts-model", default="gpt-4o-mini-tts", help="OpenAI speech model used by --tts-provider openai.")
+    parser.add_argument("--openai-voice", default="alloy", help="OpenAI TTS voice used by --tts-provider openai.")
     parser.add_argument(
         "--openai-instructions",
         default="Speak like a calm professional online-course lecturer with natural pauses.",
+        help="Speaking style instruction sent to OpenAI TTS.",
     )
-    parser.add_argument("--tts-proxy", default="")
-    parser.add_argument("--audio-granularity", choices=["slide", "segment"], default="slide")
-    parser.add_argument("--segment-gap", type=float, default=0.16)
-    parser.add_argument("--pause", type=float, default=0.35)
-    parser.add_argument("--force-tts", action="store_true")
+    parser.add_argument("--tts-proxy", default="", help="HTTP(S) proxy for DashScope/OpenAI TTS requests.")
+    parser.add_argument("--audio-granularity", choices=["slide", "segment"], default="slide", help="Generate one audio file per slide or per subtitle segment.")
+    # Visual mode controls how the video track is rendered from the HTML deck.
+    parser.add_argument("--visual-mode", choices=["static", "ppt-transition", "element-entrance"], default="static", help="static: still screenshots; ppt-transition: page transitions; element-entrance: reveal elements by subtitle timing.")
+    parser.add_argument("--slide-transition", choices=["fade", "wipeleft", "wiperight", "wipeup", "wipedown"], default="wipeleft", help="Transition used during silent slide-change pauses.")
+    parser.add_argument("--entrance-duration", type=float, default=0.62, help="Seconds used for each newly referenced element's entrance animation.")
+    parser.add_argument("--fps", type=int, default=30, help="Video frame rate for rendered transition and animation clips.")
+    parser.add_argument("--width", type=int, default=1920, help="Output video width in pixels.")
+    parser.add_argument("--height", type=int, default=1080, help="Output video height in pixels.")
+    parser.add_argument("--chrome", type=Path, default=DEFAULT_CHROME, help="Chrome executable used for real HTML rendering in element-entrance mode.")
+    parser.add_argument("--segment-gap", type=float, default=0.16, help="Silent gap in seconds inserted between subtitle-segment audio files.")
+    parser.add_argument("--pause", type=float, default=0.35, help="Silent pause in seconds inserted between slides.")
+    parser.add_argument("--force-tts", action="store_true", help="Regenerate TTS audio even when cache files exist.")
     return parser.parse_args()
 
 
@@ -1005,11 +1727,36 @@ def main() -> None:
     srt_path = args.out_dir / "subtitles.srt"
     write_srt(segments, srt_path)
 
-    image_concat = args.out_dir / "image_concat.txt"
-    write_image_concat(segments, args.out_dir, image_concat)
-
     output = args.out_dir / "data_jobs_industry_guide.mp4"
-    compose_video(ffmpeg, args.out_dir, image_concat, narration, output)
+    if args.visual_mode == "ppt-transition":
+        videos = render_ppt_transition_clips(
+            ffmpeg,
+            segments,
+            args.out_dir,
+            fps=args.fps,
+            width=args.width,
+            height=args.height,
+            transition=args.slide_transition,
+        )
+        compose_video_from_clips(ffmpeg, args.out_dir, videos, narration, output)
+    elif args.visual_mode == "element-entrance":
+        videos = render_element_entrance_clips(
+            ffmpeg,
+            segments,
+            Path(capture_manifest["deck"]),
+            args.chrome,
+            args.out_dir,
+            fps=args.fps,
+            width=args.width,
+            height=args.height,
+            transition=args.slide_transition,
+            entrance_duration=args.entrance_duration,
+        )
+        compose_video_from_clips(ffmpeg, args.out_dir, videos, narration, output)
+    else:
+        image_concat = args.out_dir / "image_concat.txt"
+        write_image_concat(segments, args.out_dir, image_concat)
+        compose_video(ffmpeg, args.out_dir, image_concat, narration, output)
 
     write_compose_manifest(args.out_dir / "compose_manifest.json", segments, narration, output)
     print(f"Wrote {output}")

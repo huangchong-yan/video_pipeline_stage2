@@ -846,8 +846,11 @@ def run_capture_stage(config: dict, deck_dir: Path, frames_dir: Path) -> None:
 
 def run_compose_stage(config: dict, deck_dir: Path, frames_dir: Path, video_dir: Path, voice_id: str) -> None:
     tts = config.get("tts", {})
+    video_effects = config.get("video_effects", {})
+    size = config.get("slide_size", {})
     provider = tts.get("provider", "dashscope")
     ensure_clean_dir(video_dir, clean=False)
+    # video_effects controls the rendered video track; TTS settings still control audio timing.
     cmd = [
         sys.executable,
         str(ROOT / "compose_html_video.py"),
@@ -873,6 +876,20 @@ def run_compose_stage(config: dict, deck_dir: Path, frames_dir: Path, video_dir:
         tts.get("edge_rate", tts.get("rate", "+0%")),
         "--sapi-voice",
         tts.get("sapi_voice", "Microsoft Huihui Desktop"),
+        "--visual-mode",
+        video_effects.get("mode", "static"),
+        "--slide-transition",
+        video_effects.get("slide_transition", "wipeleft"),
+        "--entrance-duration",
+        str(float(video_effects.get("entrance_duration", 0.62))),
+        "--fps",
+        str(int(video_effects.get("fps", 30))),
+        "--width",
+        str(int(size.get("width", 1920))),
+        "--height",
+        str(int(size.get("height", 1080))),
+        "--chrome",
+        str(as_path(config.get("chrome", r"C:/Program Files/Google/Chrome/Application/chrome.exe"))),
     ]
     if tts.get("proxy"):
         cmd.extend(["--tts-proxy", tts.get("proxy", "")])
@@ -937,6 +954,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tts-provider", choices=["auto", "edge", "sapi", "dashscope", "openai"], help="Override config tts.provider")
     parser.add_argument("--tts-audio-granularity", choices=["slide", "segment"], help="Override config tts.audio_granularity")
     parser.add_argument("--tts-proxy", help="Explicit proxy for TTS HTTP requests, e.g. http://127.0.0.1:7897")
+    parser.add_argument(
+        "--visual-mode",
+        choices=["static", "ppt-transition", "element-entrance"],
+        help="Override config video_effects.mode. static: still screenshots; ppt-transition: page transitions; element-entrance: reveal elements by subtitle timing.",
+    )
+    parser.add_argument(
+        "--slide-transition",
+        choices=["fade", "wipeleft", "wiperight", "wipeup", "wipedown"],
+        help="Override config video_effects.slide_transition, used during silent slide-change pauses.",
+    )
+    parser.add_argument(
+        "--entrance-duration",
+        type=float,
+        help="Override config video_effects.entrance_duration, in seconds, for each newly referenced element entrance.",
+    )
     parser.add_argument("--openai-tts-model", help="Override config tts.openai_tts_model")
     parser.add_argument("--openai-voice", help="Override config tts.openai_voice")
     parser.add_argument("--force-tts", action="store_true", help="Override config tts.force=true")
@@ -984,6 +1016,12 @@ def apply_runtime_overrides(config: dict, args: argparse.Namespace) -> None:
         config.setdefault("tts", {})["audio_granularity"] = args.tts_audio_granularity
     if args.tts_proxy is not None:
         config.setdefault("tts", {})["proxy"] = args.tts_proxy
+    if args.visual_mode is not None:
+        config.setdefault("video_effects", {})["mode"] = args.visual_mode
+    if args.slide_transition is not None:
+        config.setdefault("video_effects", {})["slide_transition"] = args.slide_transition
+    if args.entrance_duration is not None:
+        config.setdefault("video_effects", {})["entrance_duration"] = args.entrance_duration
     if args.openai_tts_model is not None:
         config.setdefault("tts", {})["openai_tts_model"] = args.openai_tts_model
     if args.openai_voice is not None:
