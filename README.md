@@ -4,6 +4,8 @@ This project turns a source document into a narrated course-style video.
 
 For copy-paste-ready PowerShell commands with all runtime parameters, see `RUN_COMMANDS.md`.
 
+Demo video: [`demo/data_jobs_industry_guide_1_5x.mp4`](demo/data_jobs_industry_guide_1_5x.mp4)
+
 Pipeline:
 
 ```text
