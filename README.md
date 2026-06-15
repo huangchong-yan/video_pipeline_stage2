@@ -6,7 +6,11 @@ For copy-paste-ready PowerShell commands with all runtime parameters, see `RUN_C
 
 ## Demo
 
-<video src="demo/data_jobs_industry_guide_1_5x.mp4" controls width="100%"></video>
+<video
+  src="https://raw.githubusercontent.com/huangchong-yan/video_pipeline_stage2/main/demo/data_jobs_industry_guide_1_5x.mp4"
+  controls
+  width="100%">
+</video>
 
 If the embedded player is not shown by GitHub, open the demo video directly:
 [`demo/data_jobs_industry_guide_1_5x.mp4`](demo/data_jobs_industry_guide_1_5x.mp4)
