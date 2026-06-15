@@ -52,6 +52,13 @@ def sentence_snippets(text: str, limit=2):
 
 
 def keyword_chips(slide):
+    emphasized = slide.get("emphasized_keywords") or []
+    if isinstance(emphasized, str):
+        emphasized = re.split(r"[,，、;；\n]+", emphasized)
+    emphasized = [str(item).strip() for item in emphasized if str(item).strip()]
+    if emphasized:
+        return emphasized[:5]
+
     title = slide.get("title", "")
     script = (slide.get("speaker_script") or "") + " " + " ".join(e.get("text", "") for e in body_elements(slide))
     pool = [
@@ -465,6 +472,236 @@ CUSTOM_CSS = r"""
 }
 """
 
+XHS_CUSTOM_CSS = r"""
+.tpl-xhs-white-editorial {
+  --xhs-ink: #141414;
+  --xhs-muted: #5c6470;
+  --xhs-red: #ff2442;
+  --xhs-yellow: #ffd66b;
+  --xhs-blue: #58c7f3;
+  --xhs-green: #83d98b;
+  --xhs-pink: #ffd8e3;
+  --xhs-card: rgba(255,255,255,.92);
+}
+.tpl-xhs-white-editorial .slide {
+  padding: 58px 76px;
+  background:
+    radial-gradient(circle at 12% 12%, rgba(255,216,227,.72), transparent 30%),
+    radial-gradient(circle at 86% 16%, rgba(255,214,107,.55), transparent 26%),
+    radial-gradient(circle at 82% 84%, rgba(88,199,243,.42), transparent 30%),
+    #fffaf7;
+  color: var(--xhs-ink);
+  overflow: hidden;
+}
+.tpl-xhs-white-editorial .slide::before {
+  content: "";
+  position: absolute;
+  left: 76px;
+  right: 76px;
+  top: 34px;
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--xhs-red), var(--xhs-yellow), var(--xhs-blue), var(--xhs-green));
+}
+.tpl-xhs-white-editorial .oc-cbg,
+.tpl-xhs-white-editorial .oc-cgrid {
+  opacity: .12;
+}
+.tpl-xhs-white-editorial .oc-snum {
+  color: var(--xhs-red);
+  background: #fff;
+  border: 2px solid rgba(255,36,66,.18);
+  box-shadow: 0 12px 30px rgba(255,36,66,.12);
+}
+.tpl-xhs-white-editorial .oc-h1 {
+  color: var(--xhs-ink);
+  font-size: clamp(60px, 6.8vw, 98px);
+  max-width: 1000px;
+  letter-spacing: 0;
+}
+.tpl-xhs-white-editorial .oc-h2 {
+  color: var(--xhs-ink);
+  max-width: 1080px;
+}
+.tpl-xhs-white-editorial .oc-h1 .grad,
+.tpl-xhs-white-editorial .oc-h2 .grad {
+  background: linear-gradient(90deg, #ff2442, #ff8a00, #1ba1e2);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.tpl-xhs-white-editorial .oc-kicker,
+.tpl-xhs-white-editorial .oc-caption,
+.tpl-xhs-white-editorial .oc-subtitle,
+.tpl-xhs-white-editorial .industry-core {
+  color: var(--xhs-muted);
+}
+.tpl-xhs-white-editorial .pill-row {
+  margin-top: 34px;
+  max-width: 1000px;
+}
+.tpl-xhs-white-editorial .deepening-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  width: min(1060px, 94%);
+  margin-top: 34px;
+}
+.tpl-xhs-white-editorial .deepening-row.compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 24px;
+}
+.tpl-xhs-white-editorial .mini-panel,
+.tpl-xhs-white-editorial .gradient-card,
+.tpl-xhs-white-editorial .signal-card,
+.tpl-xhs-white-editorial .extension-card,
+.tpl-xhs-white-editorial .quote-chip,
+.tpl-xhs-white-editorial .obsidian-steps .oc-step {
+  text-align: left;
+  background: var(--xhs-card);
+  border: 2px solid rgba(20,20,20,.08);
+  border-radius: 22px;
+  box-shadow: 0 18px 42px rgba(44,38,35,.10);
+  color: var(--xhs-ink);
+}
+.tpl-xhs-white-editorial .mini-panel {
+  padding: 16px 18px;
+}
+.tpl-xhs-white-editorial .mini-panel:nth-child(1),
+.tpl-xhs-white-editorial .signal-card:nth-child(1),
+.tpl-xhs-white-editorial .extension-card:nth-child(1) {
+  background: linear-gradient(180deg, #fff, #fff0f3);
+}
+.tpl-xhs-white-editorial .mini-panel:nth-child(2),
+.tpl-xhs-white-editorial .signal-card:nth-child(2),
+.tpl-xhs-white-editorial .extension-card:nth-child(2) {
+  background: linear-gradient(180deg, #fff, #fff8dd);
+}
+.tpl-xhs-white-editorial .mini-panel:nth-child(3),
+.tpl-xhs-white-editorial .signal-card:nth-child(3),
+.tpl-xhs-white-editorial .extension-card:nth-child(3) {
+  background: linear-gradient(180deg, #fff, #eaf8ff);
+}
+.tpl-xhs-white-editorial .mini-panel b,
+.tpl-xhs-white-editorial .extension-card b,
+.tpl-xhs-white-editorial .signal-card span {
+  display: block;
+  color: var(--xhs-red);
+  font-weight: 900;
+  margin-bottom: 10px;
+}
+.tpl-xhs-white-editorial .mini-panel span,
+.tpl-xhs-white-editorial .gradient-card p,
+.tpl-xhs-white-editorial .signal-card p,
+.tpl-xhs-white-editorial .extension-card p,
+.tpl-xhs-white-editorial .extension-card li,
+.tpl-xhs-white-editorial .quote-chip {
+  color: var(--xhs-ink);
+  line-height: 1.45;
+}
+.tpl-xhs-white-editorial .obsidian-grid {
+  margin-top: 34px;
+}
+.tpl-xhs-white-editorial .gradient-card {
+  min-height: 285px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.tpl-xhs-white-editorial .gradient-card p {
+  font-size: clamp(22px, 2vw, 34px);
+}
+.tpl-xhs-white-editorial .signal-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  width: min(1060px, 94%);
+}
+.tpl-xhs-white-editorial .signal-card {
+  padding: 22px;
+  min-height: 148px;
+}
+.tpl-xhs-white-editorial .content-extension {
+  display: grid;
+  grid-template-columns: 1.1fr 1.4fr 1.1fr;
+  gap: 14px;
+  width: min(1080px, 94%);
+  margin-top: 22px;
+}
+.tpl-xhs-white-editorial .extension-card {
+  padding: 16px 18px;
+}
+.tpl-xhs-white-editorial .extension-card ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.tpl-xhs-white-editorial .skill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.tpl-xhs-white-editorial .skill-chip {
+  display: inline-flex;
+  border: 2px solid rgba(255,36,66,.18);
+  background: #fff;
+  border-radius: 999px;
+  padding: 6px 12px;
+  color: var(--xhs-red);
+  font-weight: 800;
+  font-size: 13px;
+}
+.tpl-xhs-white-editorial .obsidian-steps {
+  margin-top: 24px;
+}
+.tpl-xhs-white-editorial .obsidian-steps .oc-step {
+  padding: 18px 22px;
+  margin-bottom: 12px;
+}
+.tpl-xhs-white-editorial .quote-grid {
+  width: min(980px, 94%);
+  display: grid;
+  gap: 16px;
+  margin-top: 28px;
+}
+.tpl-xhs-white-editorial .quote-chip {
+  padding: 18px 22px;
+  font-size: 21px;
+}
+.tpl-xhs-white-editorial .action-strip {
+  width: min(900px, 90%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 24px;
+  padding: 12px 16px;
+  border: 2px solid rgba(255,36,66,.18);
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 12px 30px rgba(255,36,66,.10);
+}
+.tpl-xhs-white-editorial .action-strip span,
+.tpl-xhs-white-editorial .action-strip b {
+  color: var(--xhs-ink);
+  font-weight: 900;
+}
+.tpl-xhs-white-editorial .focusable {
+  position: relative;
+}
+.tpl-xhs-white-editorial .focusable.is-highlighted::after {
+  content: "";
+  position: absolute;
+  inset: -10px;
+  border: 6px solid #f97316;
+  border-radius: 22px;
+  pointer-events: none;
+  box-shadow: 0 0 0 5px rgba(249,115,22,.16), 0 0 38px rgba(249,115,22,.35);
+}
+.tpl-xhs-white-editorial .notes {
+  display: none;
+}
+"""
+
 
 HIGHLIGHT_JS = r"""
 (() => {
@@ -500,11 +737,31 @@ HIGHLIGHT_JS = r"""
 """
 
 
+def is_xhs_style(data: dict) -> bool:
+    style = str(data.get("video_style") or "").lower()
+    return any(marker in style for marker in ("xhs", "xiaohongshu", "小红书", "redbook"))
+
+
+def deck_theme(data: dict) -> tuple[str, str, str]:
+    if is_xhs_style(data):
+        return (
+            "Xiaohongshu White Editorial",
+            "tpl-xhs-white-editorial",
+            "templates/full-decks/xhs-white-editorial/style.css",
+        )
+    return (
+        "Obsidian Claude Gradient",
+        "tpl-obsidian-claude-gradient",
+        "templates/full-decks/obsidian-claude-gradient/style.css",
+    )
+
+
 def build(data, asset_prefix):
     slides = data.get("slides", [])
     total = len(slides)
     content = "\n".join(render_slide(slide, total) for slide in slides)
     title = esc(data.get("course_title", "AI Course Deck"))
+    theme_name, body_class, theme_path = deck_theme(data)
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -513,10 +770,10 @@ def build(data, asset_prefix):
 <title>{title} · Obsidian Claude Gradient</title>
 <link rel="stylesheet" href="{asset_prefix}/assets/fonts.css">
 <link rel="stylesheet" href="{asset_prefix}/assets/base.css">
-<link rel="stylesheet" href="{asset_prefix}/templates/full-decks/obsidian-claude-gradient/style.css">
+<link rel="stylesheet" href="{asset_prefix}/{theme_path}">
 <link rel="stylesheet" href="style.css">
 </head>
-<body class="tpl-obsidian-claude-gradient">
+<body class="{body_class}">
 <div class="deck">
 {content}
 </div>
@@ -537,10 +794,12 @@ def main():
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "index.html").write_text(build(data, args.asset_prefix), encoding="utf-8")
-    (out_dir / "style.css").write_text(CUSTOM_CSS, encoding="utf-8")
+    style_css = XHS_CUSTOM_CSS if is_xhs_style(data) else CUSTOM_CSS
+    (out_dir / "style.css").write_text(style_css, encoding="utf-8")
     (out_dir / "highlight-preview.js").write_text(HIGHLIGHT_JS, encoding="utf-8")
     (out_dir / "deck-data.json").write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"Wrote Obsidian deck to {out_dir / 'index.html'}")
+    theme_name, _, _ = deck_theme(data)
+    print(f"Wrote {theme_name} deck to {out_dir / 'index.html'}")
 
 
 if __name__ == "__main__":

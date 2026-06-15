@@ -2,6 +2,8 @@
 
 This project turns a source document into a narrated course-style video.
 
+For copy-paste-ready PowerShell commands with all runtime parameters, see `RUN_COMMANDS.md`.
+
 Pipeline:
 
 ```text
@@ -117,9 +119,24 @@ slide_count      text
 video_style      text
 highlight_style  text
 generation_goal  text
+audio_style      text
 ```
 
 `--document` is uploaded to Dify and passed as `source_doc`.
+
+Recommended LLM prompt wording inside Dify:
+
+```text
+Audio style:
+{{audio_style}}
+
+When generating tts_script and subtitle_segments.text:
+- Write spoken Chinese, not written prose.
+- Use natural punctuation for speech rhythm: commas, semicolons, dashes, ellipses, short rhetorical questions.
+- Make the speaker sound like an energetic classroom teacher: friendly, clear, lightly interactive, but not exaggerated.
+- Encode delivery through wording and punctuation. Do not output bracketed stage directions like [pause] or (smile).
+- Avoid announcer style, AI cadence, and ending every sentence with the same full stop rhythm.
+```
 
 The script uploads local files via:
 
@@ -162,9 +179,8 @@ python run_video_pipeline.py --config pipeline_config.json --stage compose --for
 Choose a TTS provider:
 
 ```powershell
+python run_video_pipeline.py --config pipeline_config.json --stage compose --tts-provider dashscope --tts-audio-granularity slide --force-tts
 python run_video_pipeline.py --config pipeline_config.json --stage compose --tts-provider edge --tts-audio-granularity segment --force-tts
-python run_video_pipeline.py --config pipeline_config.json --stage compose --tts-provider openai --openai-tts-model gpt-4o-mini-tts --openai-voice alloy --tts-audio-granularity segment --force-tts
-python run_video_pipeline.py --config pipeline_config.json --stage compose --tts-provider dashscope --tts-audio-granularity segment --force-tts
 ```
 
 For HTTP TTS providers such as OpenAI or DashScope, add `--tts-proxy "http://127.0.0.1:7897"` when needed.
@@ -204,8 +220,6 @@ Generated under `outputs/`:
 - `outputs/html_video/data_jobs_industry_guide.mp4`
 - `outputs/html_video/subtitles.srt`
 - `outputs/html_video/compose_manifest.json`
-
-These files are ignored by Git.
 
 ## Model Notes
 

@@ -8,12 +8,14 @@
     "user": "video-pipeline",
     "trust_env_proxy": true,
     "proxy": "",
-    "network_retries": 3,
+    "timeout": 900,
+    "network_retries": 5,
     "inputs": {
       "slide_count": "8",
-      "video_style": "professional paid-course style, clear and beginner-friendly",
+      "video_style": "xhs_white_editorial",
       "highlight_style": "orange_box",
-      "generation_goal": "Generate a complete course-style PPT production JSON that can be composed directly into video."
+      "generation_goal": "Generate a complete course-style PPT production JSON that can be composed directly into video.",
+      "audio_style": "Natural Mandarin classroom-teacher style: clear, friendly, lightly interactive, with varied rhythm and realistic punctuation for pauses. Avoid announcer style, robotic cadence, and overacting."
     },
     "files": [
       {
@@ -38,6 +40,7 @@
     "provider": "openai",
     "model": "gpt-4.1",
     "api_key_env": "OPENAI_API_KEY",
+    "base_url": "",
     "source_document": "",
     "output_json": "outputs/llm/production_json.json",
     "raw_response": "outputs/llm/raw_response.json",
@@ -50,9 +53,10 @@
     "network_retries": 3,
     "inputs": {
       "slide_count": "8",
-      "video_style": "professional paid-course style, clear and beginner-friendly",
+      "video_style": "xhs_white_editorial",
       "highlight_style": "orange_box",
-      "generation_goal": "Generate a complete course-style PPT production JSON that can be composed directly into video."
+      "generation_goal": "Generate a complete course-style PPT production JSON that can be composed directly into video.",
+      "audio_style": "Natural Mandarin classroom-teacher style: clear, friendly, lightly interactive, with varied rhythm and realistic punctuation for pauses. Avoid announcer style, robotic cadence, and overacting."
     },
     "system_prompt": "You are a senior instructional designer. Return only valid JSON that follows the requested schema."
   },
@@ -67,26 +71,46 @@
     "height": 1080
   },
   "capture": {
-    "include_highlights": true,
-    "skip_if_manifest_exists": false
+    "include_highlights": false,
+    "skip_if_manifest_exists": false,
+    "timeout": 120,
+    "retries": 2
+  },
+  "video_effects": {
+    "mode": "element-entrance",
+    "slide_transition": "wipeleft",
+    "entrance_duration": 0.62,
+    "fps": 30
+  },
+  "avatar": {
+    "mode": "none",
+    "position": "bottom-right",
+    "scale": 0.22
   },
   "tts": {
-    "provider": "dashscope",
+    "provider": "edge",
     "force": false,
     "audio_granularity": "segment",
     "proxy": "",
     "edge_voice": "zh-CN-YunxiNeural",
     "edge_rate": "+0%",
     "sapi_voice": "Microsoft Huihui Desktop",
-    "segment_gap": 0.18,
+    "segment_gap": 0.06,
     "slide_pause": 0.45,
     "dashscope_model": "cosyvoice-v3.5-plus",
     "dashscope_voice_id_file": "",
     "dashscope_voice_id": "",
-    "dashscope_instruction": "Speak like a calm professional online-course lecturer with natural pauses.",
+    "dashscope_instruction": "Natural Mandarin classroom explanation. Keep it clear, friendly, and lightly interactive. Use realistic pauses and varied rhythm. Avoid announcer style, robotic cadence, and overacting.",
     "openai_tts_model": "gpt-4o-mini-tts",
-    "openai_voice": "alloy",
-    "openai_instructions": "Speak like a calm professional online-course lecturer with natural pauses."
+    "openai_voice": "nova",
+    "openai_speed": 1.08,
+    "openai_instructions": "Speak in natural conversational Mandarin, like a real teacher recording a short course video. Keep it clear and relaxed, with realistic pauses and varied rhythm. Avoid announcer style, sales tone, exaggerated emotion, and robotic pacing. Slow down slightly for important concepts.",
+    "minimax_base_url": "",
+    "minimax_api_key_env": "MINIMAX_TTS_API_KEY",
+    "minimax_model": "speech-02-hd",
+    "minimax_voice": "female-yujie",
+    "minimax_speed": 1.0,
+    "minimax_protocol": "openai"
   },
   "voice_design": {
     "enabled": false,
@@ -94,7 +118,7 @@
     "preview_output": "outputs/voice_samples/auto_lecturer_preview.wav",
     "target_model": "cosyvoice-v3.5-plus",
     "prefix": "lecturer_auto",
-    "voice_prompt": "Original Mandarin male online-course lecturer, age 35 to 45, calm, warm, natural, clear articulation, realistic pauses, professional but conversational. Do not imitate any real person.",
+    "voice_prompt": "Original Mandarin teacher, age 35 to 45, energetic classroom explanation, friendly and clear, lightly interactive, realistic breathing and pauses, not announcer-like, not robotic, not exaggerated, not imitating any real person.",
     "preview_slide_id": 1
   }
 }

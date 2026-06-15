@@ -22,6 +22,18 @@ from PIL import Image, ImageDraw, ImageFont
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_CHROME = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+NATURAL_DASHSCOPE_TTS_INSTRUCTION = (
+    "自然中文口语讲解，像真人老师在录短视频课程。语气松弛、清楚、有停顿，不要播音腔，"
+    "不要夸张情绪，不要每句都同一种节奏。重要概念稍微放慢，句子之间自然换气。"
+)
+NATURAL_OPENAI_TTS_INSTRUCTION = (
+    "Speak in natural conversational Mandarin, like a real teacher recording a short course video. "
+    "Keep it clear and relaxed, with realistic pauses and varied rhythm. Avoid announcer style, "
+    "sales tone, exaggerated emotion, and robotic pacing. Slow down slightly for important concepts."
+)
+DEFAULT_MINIMAX_BASE_URL = ""
+DEFAULT_MINIMAX_MODEL = "speech-02-hd"
+DEFAULT_MINIMAX_VOICE = "female-yujie"
 
 
 @dataclass
@@ -49,6 +61,14 @@ class AudioUnit:
     is_pause: bool = False
 
 
+@dataclass
+class AvatarConfig:
+    mode: str = "none"
+    position: str = "bottom-right"
+    scale: float = 0.22
+    fps: int = 15
+
+
 def load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -63,6 +83,10 @@ def ffmpeg_exe() -> str:
     import imageio_ffmpeg
 
     return imageio_ffmpeg.get_ffmpeg_exe()
+
+
+def ffmpeg_command(ffmpeg: str, *args: str) -> list[str]:
+    return [ffmpeg, "-hide_banner", "-loglevel", "error", *args]
 
 
 def cache_fingerprint(payload: dict) -> str:
@@ -108,7 +132,14 @@ async def synthesize_slide_audio(
     dashscope_instruction: str,
     openai_tts_model: str,
     openai_voice: str,
+    openai_speed: float,
     openai_instructions: str,
+    minimax_base_url: str,
+    minimax_api_key_env: str,
+    minimax_model: str,
+    minimax_voice: str,
+    minimax_speed: float,
+    minimax_protocol: str,
     tts_proxy: str,
 ) -> list[Path]:
     audio_dir.mkdir(parents=True, exist_ok=True)
@@ -135,12 +166,20 @@ async def synthesize_slide_audio(
             "dashscope_instruction": dashscope_instruction,
             "openai_tts_model": openai_tts_model,
             "openai_voice": openai_voice,
+            "openai_speed": openai_speed,
             "openai_instructions": openai_instructions,
+            "minimax_base_url": minimax_base_url,
+            "minimax_api_key_env": minimax_api_key_env,
+            "minimax_model": minimax_model,
+            "minimax_voice": minimax_voice,
+            "minimax_speed": minimax_speed,
+            "minimax_protocol": minimax_protocol,
             "slide_id": slide_id,
         }
         if not force and audio_cache_valid(audio_path, meta_path, cache_payload):
             continue
 
+        print(f"Synthesizing {provider} TTS for slide {slide_id:02d} ({len(text)} chars)")
         await synthesize_tts_audio(
             text=text,
             audio_path=audio_path,
@@ -154,7 +193,14 @@ async def synthesize_slide_audio(
             dashscope_instruction=dashscope_instruction,
             openai_tts_model=openai_tts_model,
             openai_voice=openai_voice,
+            openai_speed=openai_speed,
             openai_instructions=openai_instructions,
+            minimax_base_url=minimax_base_url,
+            minimax_api_key_env=minimax_api_key_env,
+            minimax_model=minimax_model,
+            minimax_voice=minimax_voice,
+            minimax_speed=minimax_speed,
+            minimax_protocol=minimax_protocol,
             tts_proxy=tts_proxy,
         )
         write_audio_cache_meta(meta_path, cache_payload)
@@ -176,7 +222,14 @@ async def synthesize_segment_audio(
     dashscope_instruction: str,
     openai_tts_model: str,
     openai_voice: str,
+    openai_speed: float,
     openai_instructions: str,
+    minimax_base_url: str,
+    minimax_api_key_env: str,
+    minimax_model: str,
+    minimax_voice: str,
+    minimax_speed: float,
+    minimax_protocol: str,
     tts_proxy: str,
     segment_gap: float,
     slide_pause: float,
@@ -214,13 +267,21 @@ async def synthesize_segment_audio(
                     "sapi_voice": sapi_voice,
                     "openai_tts_model": openai_tts_model,
                     "openai_voice": openai_voice,
+                    "openai_speed": openai_speed,
                     "openai_instructions": openai_instructions,
+                    "minimax_base_url": minimax_base_url,
+                    "minimax_api_key_env": minimax_api_key_env,
+                    "minimax_model": minimax_model,
+                    "minimax_voice": minimax_voice,
+                    "minimax_speed": minimax_speed,
+                    "minimax_protocol": minimax_protocol,
                     "slide_id": slide_id,
                     "segment_index": idx,
                 }
             if audio_path.exists() and audio_path.stat().st_size == 0:
                 audio_path.unlink()
             if force or not audio_cache_valid(audio_path, meta_path, cache_payload):
+                print(f"Synthesizing {provider} TTS for slide {slide_id:02d} segment {idx:02d} ({len(text)} chars)")
                 await synthesize_tts_audio(
                     text=text,
                     audio_path=audio_path,
@@ -234,7 +295,14 @@ async def synthesize_segment_audio(
                     dashscope_instruction=dashscope_instruction,
                     openai_tts_model=openai_tts_model,
                     openai_voice=openai_voice,
+                    openai_speed=openai_speed,
                     openai_instructions=openai_instructions,
+                    minimax_base_url=minimax_base_url,
+                    minimax_api_key_env=minimax_api_key_env,
+                    minimax_model=minimax_model,
+                    minimax_voice=minimax_voice,
+                    minimax_speed=minimax_speed,
+                    minimax_protocol=minimax_protocol,
                     tts_proxy=tts_proxy,
                 )
                 write_audio_cache_meta(meta_path, cache_payload)
@@ -304,7 +372,14 @@ async def synthesize_tts_audio(
     dashscope_instruction: str,
     openai_tts_model: str,
     openai_voice: str,
+    openai_speed: float,
     openai_instructions: str,
+    minimax_base_url: str,
+    minimax_api_key_env: str,
+    minimax_model: str,
+    minimax_voice: str,
+    minimax_speed: float,
+    minimax_protocol: str,
     tts_proxy: str,
 ) -> None:
     if provider == "sapi":
@@ -326,7 +401,21 @@ async def synthesize_tts_audio(
             audio_path=audio_path,
             model=openai_tts_model,
             voice=openai_voice,
+            speed=openai_speed,
             instructions=openai_instructions,
+            proxy=tts_proxy,
+        )
+        return
+    if provider == "minimax":
+        synthesize_minimax_audio(
+            text=text,
+            audio_path=audio_path,
+            base_url=minimax_base_url,
+            api_key_env=minimax_api_key_env,
+            model=minimax_model,
+            voice=minimax_voice,
+            speed=minimax_speed,
+            protocol=minimax_protocol,
             proxy=tts_proxy,
         )
         return
@@ -354,39 +443,82 @@ def request_proxy_kwargs(proxy: str) -> dict:
     return {"proxies": {"http": proxy, "https": proxy}} if proxy else {}
 
 
+def validate_http_bearer_key(api_key: str, env_name: str) -> None:
+    placeholder_markers = ("your_", "your-", "YOUR_", "你的", "浣犵殑")
+    if any(marker in api_key for marker in placeholder_markers):
+        raise RuntimeError(f"{env_name} is still a placeholder. Set it to your real API key.")
+    try:
+        api_key.encode("latin-1")
+    except UnicodeEncodeError as exc:
+        raise RuntimeError(f"{env_name} must contain only HTTP-header-safe characters. Check that you pasted the real API key.") from exc
+
+
 def synthesize_dashscope_audio(text: str, audio_path: Path, voice_id: str, model: str, instruction: str, proxy: str = "") -> None:
     import requests
 
     api_key = os.environ.get("DASHSCOPE_API_KEY")
     if not api_key:
         raise RuntimeError("DASHSCOPE_API_KEY is required for --tts-provider dashscope.")
+    validate_http_bearer_key(api_key, "DASHSCOPE_API_KEY")
     if not voice_id:
         raise RuntimeError("--dashscope-voice-id is required for --tts-provider dashscope.")
 
-    payload = {
-        "model": model,
-        "input": {
+    def build_payload(
+        style_instruction: str,
+        speech_rate: float | None,
+        volume: int | None,
+        language_hints: list[str] | None,
+    ) -> dict:
+        input_payload = {
             "text": text,
             "voice": voice_id,
             "format": "mp3",
             "sample_rate": 24000,
-            "rate": 0.92,
-            "volume": 60,
-            "language_hints": ["zh"],
-        },
-    }
-    if instruction:
-        payload["input"]["instruction"] = instruction
+        }
+        if speech_rate is not None:
+            input_payload["rate"] = speech_rate
+        if volume is not None:
+            input_payload["volume"] = volume
+        if language_hints:
+            input_payload["language_hints"] = language_hints
+        payload = {
+            "model": model,
+            "input": input_payload,
+        }
+        if style_instruction:
+            payload["input"]["instruction"] = style_instruction
+        return payload
 
-    response = requests.post(
-        "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer",
-        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
-        json=payload,
-        timeout=180,
-        **request_proxy_kwargs(proxy),
-    )
-    if not response.ok:
-        raise RuntimeError(f"DashScope TTS failed: {response.status_code} {response.text[:500]}")
+    attempts = [
+        ("normal", instruction, 0.92, 60, ["zh"]),
+        ("without-instruction", "", 0.92, 60, ["zh"]),
+        ("neutral-rate", "", 1.0, 60, ["zh"]),
+        ("minimal", "", None, None, None),
+    ]
+    last_error = ""
+    response = None
+    payload = {}
+    for label, style_instruction, speech_rate, volume, language_hints in attempts:
+        payload = build_payload(style_instruction, speech_rate, volume, language_hints)
+        response = requests.post(
+            "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer",
+            headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
+            json=payload,
+            timeout=180,
+            **request_proxy_kwargs(proxy),
+        )
+        if response.ok:
+            if label != "normal":
+                print(f"DashScope TTS recovered with fallback: {label}")
+            break
+        last_error = response.text[:500]
+        if response.status_code != 400 or "Engine return error code: 428" not in response.text:
+            break
+        print(f"DashScope TTS 428 on {audio_path.name}; retrying with fallback: {label}")
+
+    if response is None or not response.ok:
+        status = response.status_code if response is not None else "no-response"
+        raise RuntimeError(f"DashScope TTS failed: {status} {last_error}")
 
     data = response.json()
     audio_url = data["output"]["audio"]["url"]
@@ -395,33 +527,168 @@ def synthesize_dashscope_audio(text: str, audio_path: Path, voice_id: str, model
         raise RuntimeError(f"DashScope audio download failed: {audio_response.status_code}")
     audio_path.write_bytes(audio_response.content)
 
+def synthesize_openai_audio(text: str, audio_path: Path, model: str, voice: str, speed: float, instructions: str, proxy: str = "") -> None:
+    import time
 
-def synthesize_openai_audio(text: str, audio_path: Path, model: str, voice: str, instructions: str, proxy: str = "") -> None:
     import requests
 
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is required for --tts-provider openai.")
+    validate_http_bearer_key(api_key, "OPENAI_API_KEY")
 
     payload = {
         "model": model,
         "voice": voice,
         "input": text,
         "response_format": "mp3",
+        "speed": speed,
     }
     if instructions:
         payload["instructions"] = instructions
 
-    response = requests.post(
-        "https://api.openai.com/v1/audio/speech",
-        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
-        json=payload,
-        timeout=180,
-        **request_proxy_kwargs(proxy),
-    )
+    last_error: Exception | None = None
+    for attempt in range(1, 5):
+        try:
+            response = requests.post(
+                "https://api.openai.com/v1/audio/speech",
+                headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
+                json=payload,
+                timeout=180,
+                **request_proxy_kwargs(proxy),
+            )
+            break
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt == 4:
+                proxy_hint = f" via proxy {proxy}" if proxy else ""
+                raise RuntimeError(f"OpenAI TTS network request failed{proxy_hint}: {exc}") from exc
+            time.sleep(attempt * 2)
+    else:
+        raise RuntimeError("OpenAI TTS network request failed.") from last_error
+
     if not response.ok:
         raise RuntimeError(f"OpenAI TTS failed: {response.status_code} {response.text[:500]}")
     audio_path.write_bytes(response.content)
+
+
+def append_api_path(base_url: str, path: str) -> str:
+    base = base_url.rstrip("/")
+    if base.endswith(path):
+        return base
+    if base.endswith("/v1"):
+        return base + path.removeprefix("/v1")
+    return base + path
+
+
+def write_minimax_official_audio(response, audio_path: Path) -> bool:
+    try:
+        data = response.json()
+    except ValueError:
+        return False
+    candidates = [
+        data.get("data", {}).get("audio"),
+        data.get("audio"),
+        data.get("output", {}).get("audio"),
+    ]
+    for raw in candidates:
+        if not raw:
+            continue
+        if isinstance(raw, dict):
+            url = raw.get("url")
+            if url:
+                import requests
+
+                audio_response = requests.get(url, timeout=180)
+                if audio_response.ok:
+                    audio_path.write_bytes(audio_response.content)
+                    return True
+            raw = raw.get("data") or raw.get("content")
+        if not isinstance(raw, str):
+            continue
+        try:
+            audio_path.write_bytes(bytes.fromhex(raw))
+            return True
+        except ValueError:
+            try:
+                audio_path.write_bytes(base64.b64decode(raw))
+                return True
+            except Exception:
+                continue
+    return False
+
+
+def synthesize_minimax_audio(
+    text: str,
+    audio_path: Path,
+    base_url: str,
+    api_key_env: str,
+    model: str,
+    voice: str,
+    speed: float,
+    protocol: str,
+    proxy: str = "",
+) -> None:
+    import requests
+
+    env_name = api_key_env or "MINIMAX_TTS_API_KEY"
+    api_key = os.environ.get(env_name)
+    if not api_key:
+        raise RuntimeError(f"{env_name} is required for --tts-provider minimax.")
+    validate_http_bearer_key(api_key, env_name)
+    if not base_url:
+        raise RuntimeError("--minimax-base-url is required for --tts-provider minimax.")
+
+    protocol = (protocol or "auto").lower()
+    headers = {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"}
+    errors: list[str] = []
+
+    if protocol in {"auto", "openai"}:
+        payload = {
+            "model": model,
+            "voice": voice,
+            "input": text,
+            "response_format": "mp3",
+            "speed": speed,
+        }
+        url = append_api_path(base_url, "/v1/audio/speech")
+        response = requests.post(url, headers=headers, json=payload, timeout=180, **request_proxy_kwargs(proxy))
+        if response.ok:
+            audio_path.write_bytes(response.content)
+            return
+        errors.append(f"openai-compatible {response.status_code}: {response.text[:300]}")
+        if protocol == "openai":
+            raise RuntimeError(f"MiniMax TTS failed: {errors[-1]}")
+
+    if protocol in {"auto", "official"}:
+        payload = {
+            "model": model,
+            "text": text,
+            "stream": False,
+            "output_format": "hex",
+            "voice_setting": {
+                "voice_id": voice,
+                "speed": speed,
+                "vol": 1,
+                "pitch": 0,
+            },
+            "audio_setting": {
+                "sample_rate": 32000,
+                "bitrate": 128000,
+                "format": "mp3",
+                "channel": 1,
+            },
+            "language_boost": "auto",
+        }
+        url = append_api_path(base_url, "/v1/t2a_v2")
+        response = requests.post(url, headers=headers, json=payload, timeout=180, **request_proxy_kwargs(proxy))
+        if response.ok and write_minimax_official_audio(response, audio_path):
+            return
+        errors.append(f"official {response.status_code}: {response.text[:300]}")
+        if protocol == "official":
+            raise RuntimeError(f"MiniMax TTS failed: {errors[-1]}")
+
+    raise RuntimeError("MiniMax TTS failed. Tried " + " | ".join(errors))
 
 
 def synthesize_sapi_audio(text: str, audio_path: Path, voice_name: str, ffmpeg: str) -> None:
@@ -470,7 +737,7 @@ $synth.Dispose()
         check=True,
     )
     subprocess.run(
-        [
+        ffmpeg_command(
             ffmpeg,
             "-y",
             "-i",
@@ -480,7 +747,7 @@ $synth.Dispose()
             "-b:a",
             "192k",
             str(audio_path),
-        ],
+        ),
         check=True,
     )
 
@@ -589,6 +856,99 @@ def add_subtitle_overlay(source: Image.Image, subtitle: str) -> Image.Image:
     return image.convert("RGB")
 
 
+def avatar_enabled(config: AvatarConfig | None) -> bool:
+    return bool(config and config.mode != "none")
+
+
+def avatar_box(width: int, height: int, config: AvatarConfig) -> tuple[int, int, int, int]:
+    avatar_h = int(height * max(0.12, min(config.scale, 0.36)))
+    avatar_w = int(avatar_h * 0.72)
+    margin_x = int(width * 0.035)
+    margin_y = int(height * 0.22)
+    if config.position == "bottom-left":
+        x1 = margin_x
+    else:
+        x1 = width - margin_x - avatar_w
+    y1 = height - margin_y - avatar_h
+    return x1, y1, x1 + avatar_w, y1 + avatar_h
+
+
+def draw_cartoon_teacher(layer: Image.Image, box: tuple[int, int, int, int], speaking: bool, progress: float) -> None:
+    draw = ImageDraw.Draw(layer)
+    x1, y1, x2, y2 = box
+    w = x2 - x1
+    h = y2 - y1
+    bob = int(h * 0.018 * __import__("math").sin(progress * 6.283))
+    y1 += bob
+    y2 += bob
+
+    shadow = (x1 + int(w * 0.1), y2 - int(h * 0.04), x2 - int(w * 0.08), y2 + int(h * 0.02))
+    draw.ellipse(shadow, fill=(0, 0, 0, 42))
+
+    body = (x1 + int(w * 0.18), y1 + int(h * 0.48), x2 - int(w * 0.14), y2 - int(h * 0.04))
+    draw.rounded_rectangle(body, radius=int(w * 0.18), fill=(255, 255, 255, 235), outline=(255, 36, 66, 180), width=max(2, int(w * 0.018)))
+    scarf = (x1 + int(w * 0.25), y1 + int(h * 0.53), x2 - int(w * 0.2), y1 + int(h * 0.62))
+    draw.rounded_rectangle(scarf, radius=int(w * 0.06), fill=(255, 36, 66, 235))
+
+    arm_y = y1 + int(h * 0.63)
+    if speaking:
+        arm = [
+            (x1 + int(w * 0.25), arm_y),
+            (x1 + int(w * 0.02), y1 + int(h * 0.52)),
+            (x1 + int(w * 0.08), y1 + int(h * 0.46)),
+            (x1 + int(w * 0.34), arm_y + int(h * 0.08)),
+        ]
+    else:
+        arm = [
+            (x1 + int(w * 0.25), arm_y),
+            (x1 + int(w * 0.05), y1 + int(h * 0.68)),
+            (x1 + int(w * 0.1), y1 + int(h * 0.75)),
+            (x1 + int(w * 0.34), arm_y + int(h * 0.08)),
+        ]
+    draw.polygon(arm, fill=(255, 232, 210, 245))
+    draw.ellipse((arm[1][0] - int(w * 0.03), arm[1][1] - int(w * 0.03), arm[1][0] + int(w * 0.05), arm[1][1] + int(w * 0.05)), fill=(255, 232, 210, 250))
+
+    head = (x1 + int(w * 0.18), y1 + int(h * 0.09), x2 - int(w * 0.14), y1 + int(h * 0.53))
+    draw.ellipse(head, fill=(255, 226, 202, 255), outline=(45, 42, 44, 210), width=max(2, int(w * 0.016)))
+    hair = (x1 + int(w * 0.16), y1 + int(h * 0.06), x2 - int(w * 0.12), y1 + int(h * 0.28))
+    draw.pieslice(hair, start=180, end=360, fill=(55, 44, 42, 255))
+    draw.ellipse((x1 + int(w * 0.11), y1 + int(h * 0.2), x1 + int(w * 0.26), y1 + int(h * 0.38)), fill=(55, 44, 42, 255))
+
+    eye_y = y1 + int(h * 0.31)
+    eye_w = max(3, int(w * 0.035))
+    if int(progress * 10) % 23 == 0:
+        draw.line((x1 + int(w * 0.38), eye_y, x1 + int(w * 0.48), eye_y), fill=(38, 38, 40, 255), width=max(2, int(w * 0.012)))
+        draw.line((x1 + int(w * 0.62), eye_y, x1 + int(w * 0.72), eye_y), fill=(38, 38, 40, 255), width=max(2, int(w * 0.012)))
+    else:
+        draw.ellipse((x1 + int(w * 0.41), eye_y - eye_w, x1 + int(w * 0.41) + eye_w, eye_y + eye_w), fill=(38, 38, 40, 255))
+        draw.ellipse((x1 + int(w * 0.65), eye_y - eye_w, x1 + int(w * 0.65) + eye_w, eye_y + eye_w), fill=(38, 38, 40, 255))
+
+    mouth_w = int(w * 0.17)
+    mouth_h = int(h * (0.028 + (0.045 if speaking else 0.0) * (0.5 + 0.5 * __import__("math").sin(progress * 36.0))))
+    mx = x1 + int(w * 0.54)
+    my = y1 + int(h * 0.41)
+    draw.rounded_rectangle((mx - mouth_w // 2, my - mouth_h // 2, mx + mouth_w // 2, my + mouth_h // 2), radius=max(2, mouth_h // 2), fill=(92, 34, 42, 245))
+
+    font = find_font(max(13, int(w * 0.075)), bold=True)
+    badge = (x1 + int(w * 0.05), y1 + int(h * 0.02), x1 + int(w * 0.58), y1 + int(h * 0.14))
+    draw.rounded_rectangle(badge, radius=int(w * 0.05), fill=(255, 255, 255, 235), outline=(255, 36, 66, 110), width=2)
+    draw.text((badge[0] + int(w * 0.05), badge[1] + int(h * 0.018)), "讲师", font=font, fill=(255, 36, 66, 255))
+
+
+def add_avatar_overlay(source: Image.Image, config: AvatarConfig | None, speaking: bool, progress: float) -> Image.Image:
+    image = source.convert("RGBA")
+    if not avatar_enabled(config):
+        return image.convert("RGB")
+    layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw_cartoon_teacher(layer, avatar_box(image.width, image.height, config), speaking=speaking, progress=progress)
+    return Image.alpha_composite(image, layer).convert("RGB")
+
+
+def decorate_frame(source: Image.Image, subtitle: str, avatar: AvatarConfig | None = None, speaking: bool = True, progress: float = 0.0) -> Image.Image:
+    image = add_subtitle_overlay(source, subtitle)
+    return add_avatar_overlay(image, avatar, speaking=speaking and bool(subtitle.strip()), progress=progress)
+
+
 def render_subtitle_frame(source: Path, dest: Path, subtitle: str) -> None:
     image = Image.open(source)
     add_subtitle_overlay(image, subtitle).save(dest, quality=95)
@@ -615,6 +975,7 @@ def build_segments(
     audio_files: list[Path],
     output_frames_dir: Path,
     pause: float,
+    avatar: AvatarConfig | None = None,
 ) -> list[Segment]:
     if output_frames_dir.exists():
         shutil.rmtree(output_frames_dir)
@@ -634,7 +995,8 @@ def build_segments(
             related_id = subtitle_item.get("related_element_id", "")
             source = slide_frames["highlight_by_target"].get(related_id, slide_frames["base"])
             dest = output_frames_dir / f"seg_{len(segments) + 1:04d}.jpg"
-            render_subtitle_frame(source, dest, subtitle_item["text"])
+            image = Image.open(source)
+            decorate_frame(image, subtitle_item["text"], avatar, speaking=True, progress=idx / max(len(subtitles), 1)).save(dest, quality=95)
             segments.append(
                 Segment(
                     image=dest,
@@ -648,7 +1010,8 @@ def build_segments(
 
         if pause > 0 and slide_id != int(deck["slides"][-1]["slide_id"]):
             dest = output_frames_dir / f"seg_{len(segments) + 1:04d}.jpg"
-            render_subtitle_frame(slide_frames["base"], dest, "")
+            image = Image.open(slide_frames["base"])
+            decorate_frame(image, "", avatar, speaking=False, progress=0).save(dest, quality=95)
             next_slide_id = int(deck["slides"][slide_index + 1]["slide_id"])
             segments.append(
                 Segment(
@@ -676,6 +1039,7 @@ def build_segments_from_audio_units(
     capture_manifest: dict,
     frames_dir: Path,
     output_frames_dir: Path,
+    avatar: AvatarConfig | None = None,
 ) -> list[Segment]:
     if output_frames_dir.exists():
         shutil.rmtree(output_frames_dir)
@@ -691,12 +1055,13 @@ def build_segments_from_audio_units(
 
     for unit in audio_units:
         slide_frames = frame_map[unit.slide_id]
-        if unit.is_pause:
+        if unit.is_pause and not unit.related_element_id:
             source = slide_frames["base"]
         else:
             source = slide_frames["highlight_by_target"].get(unit.related_element_id, slide_frames["base"])
         dest = output_frames_dir / f"seg_{len(segments) + 1:04d}.jpg"
-        render_subtitle_frame(source, dest, unit.subtitle)
+        image = Image.open(source)
+        decorate_frame(image, unit.subtitle, avatar, speaking=not unit.is_pause, progress=len(segments) / 10).save(dest, quality=95)
         transition_to = None
         if unit.is_pause and not unit.subtitle.strip() and not unit.related_element_id and unit.slide_id in next_slide_by_id:
             transition_to = frame_map[next_slide_by_id[unit.slide_id]]["base"]
@@ -773,7 +1138,7 @@ def make_silence(ffmpeg: str, path: Path, seconds: float) -> None:
     if path.exists() and path.stat().st_size > 0:
         return
     subprocess.run(
-        [
+        ffmpeg_command(
             ffmpeg,
             "-y",
             "-f",
@@ -787,7 +1152,7 @@ def make_silence(ffmpeg: str, path: Path, seconds: float) -> None:
             "-acodec",
             "libmp3lame",
             str(path),
-        ],
+        ),
         check=True,
     )
 
@@ -815,7 +1180,7 @@ def compose_audio(
 
     narration = out_dir / "narration_full.mp3"
     subprocess.run(
-        [
+        ffmpeg_command(
             ffmpeg,
             "-y",
             "-f",
@@ -829,7 +1194,7 @@ def compose_audio(
             "-b:a",
             "192k",
             str(narration),
-        ],
+        ),
         cwd=out_dir,
         check=True,
     )
@@ -842,7 +1207,7 @@ def compose_audio_from_units(ffmpeg: str, audio_units: list[AudioUnit], out_dir:
 
     narration = out_dir / "narration_full.mp3"
     subprocess.run(
-        [
+        ffmpeg_command(
             ffmpeg,
             "-y",
             "-f",
@@ -856,7 +1221,7 @@ def compose_audio_from_units(ffmpeg: str, audio_units: list[AudioUnit], out_dir:
             "-b:a",
             "192k",
             str(narration),
-        ],
+        ),
         cwd=out_dir,
         check=True,
     )
@@ -865,7 +1230,7 @@ def compose_audio_from_units(ffmpeg: str, audio_units: list[AudioUnit], out_dir:
 
 def compose_video(ffmpeg: str, out_dir: Path, image_concat: Path, narration: Path, output: Path) -> None:
     subprocess.run(
-        [
+        ffmpeg_command(
             ffmpeg,
             "-y",
             "-f",
@@ -892,7 +1257,7 @@ def compose_video(ffmpeg: str, out_dir: Path, image_concat: Path, narration: Pat
             "+faststart",
             "-shortest",
             str(output),
-        ],
+        ),
         cwd=out_dir,
         check=True,
     )
@@ -908,7 +1273,7 @@ def still_video_filter(width: int, height: int, fps: int) -> str:
 
 def render_still_clip(ffmpeg: str, segment: Segment, dest: Path, fps: int, width: int, height: int) -> None:
     subprocess.run(
-        [
+        ffmpeg_command(
             ffmpeg,
             "-y",
             "-loop",
@@ -929,7 +1294,7 @@ def render_still_clip(ffmpeg: str, segment: Segment, dest: Path, fps: int, width
             "-pix_fmt",
             "yuv420p",
             str(dest),
-        ],
+        ),
         check=True,
     )
     segment.video = dest
@@ -959,7 +1324,7 @@ def render_transition_clip(
         frame = transition_frame(src, nxt, progress, transition)
         frame.save(frames_dir / f"frame_{frame_no + 1:04d}.jpg", quality=94)
     subprocess.run(
-        [
+        ffmpeg_command(
             ffmpeg,
             "-y",
             "-framerate",
@@ -976,7 +1341,7 @@ def render_transition_clip(
             "-pix_fmt",
             "yuv420p",
             str(dest),
-        ],
+        ),
         check=True,
     )
     segment.video = dest
@@ -1226,7 +1591,11 @@ class ChromeDeckCapture:
   const easeOut = (value) => 1 - Math.pow(1 - clamp(value), 3);
   const shown = new Set(state.visible || []);
   if (state.entering) shown.add(state.entering);
-  slide.querySelectorAll('.is-highlighted').forEach((el) => el.classList.remove('is-highlighted'));
+  const currentHighlight = slide.dataset.activeHighlight || '';
+  if (currentHighlight !== (state.highlight || '')) {{
+    slide.querySelectorAll('.is-highlighted').forEach((el) => el.classList.remove('is-highlighted'));
+    slide.dataset.activeHighlight = state.highlight || '';
+  }}
   slide.querySelectorAll('[data-element-id]').forEach((el) => {{
     const id = el.dataset.elementId || '';
     const visible = shown.has(id);
@@ -1246,7 +1615,7 @@ class ChromeDeckCapture:
     el.style.filter = `blur(${{(1 - p) * 4}}px)`;
   }});
   const target = state.highlight ? slide.querySelector(`[data-element-id="${{state.highlight}}"]`) : null;
-  if (target) target.classList.add('is-highlighted');
+  if (target && !target.classList.contains('is-highlighted')) target.classList.add('is-highlighted');
   return true;
 }})()
 """
@@ -1295,7 +1664,7 @@ class ChromeDeckCapture:
 
 def encode_frame_sequence(ffmpeg: str, frames_dir: Path, fps: int, dest: Path) -> None:
     subprocess.run(
-        [
+        ffmpeg_command(
             ffmpeg,
             "-y",
             "-framerate",
@@ -1312,7 +1681,7 @@ def encode_frame_sequence(ffmpeg: str, frames_dir: Path, fps: int, dest: Path) -
             "-pix_fmt",
             "yuv420p",
             str(dest),
-        ],
+        ),
         check=True,
     )
 
@@ -1324,7 +1693,7 @@ def concat_segment_parts(ffmpeg: str, parts: list[Path], dest: Path) -> None:
     concat_file = dest.with_suffix(".txt")
     concat_file.write_text("\n".join(f"file '{part.as_posix()}'" for part in parts) + "\n", encoding="utf-8")
     subprocess.run(
-        [
+        ffmpeg_command(
             ffmpeg,
             "-y",
             "-f",
@@ -1336,7 +1705,7 @@ def concat_segment_parts(ffmpeg: str, parts: list[Path], dest: Path) -> None:
             "-c",
             "copy",
             str(dest),
-        ],
+        ),
         check=True,
     )
 
@@ -1352,10 +1721,11 @@ def render_element_still(
     fps: int,
     width: int,
     height: int,
+    avatar: AvatarConfig | None = None,
 ) -> None:
     capture.apply_state(segment.slide_id, visible_ids, "", highlight_id, 1)
     image_path = image_dir / f"seg_{segment.slide_id:02d}_{segment.segment_index:02d}_{len(list(image_dir.glob('*.jpg'))) + 1:04d}.jpg"
-    add_subtitle_overlay(capture.screenshot(), segment.subtitle).save(image_path, quality=95)
+    decorate_frame(capture.screenshot(), segment.subtitle, avatar, speaking=bool(segment.subtitle.strip()), progress=segment.segment_index).save(image_path, quality=95)
     still_segment = Segment(
         image=image_path,
         duration=segment.duration,
@@ -1383,6 +1753,7 @@ def render_element_entrance_clip(
     width: int,
     height: int,
     entrance_duration: float,
+    avatar: AvatarConfig | None = None,
 ) -> None:
     animation_duration = min(segment.duration, entrance_duration)
     frame_count = max(2, int(round(animation_duration * fps)))
@@ -1395,7 +1766,7 @@ def render_element_entrance_clip(
     for frame_no in range(frame_count):
         progress = frame_no / max(frame_count - 1, 1)
         capture.apply_state(segment.slide_id, prior_visible_ids, entering_id, highlight_id, progress)
-        frame = add_subtitle_overlay(capture.screenshot(), segment.subtitle)
+        frame = decorate_frame(capture.screenshot(), segment.subtitle, avatar, speaking=bool(segment.subtitle.strip()), progress=progress)
         frame.save(frames_dir / f"frame_{frame_no + 1:04d}.jpg", quality=94)
 
     animation_clip = work_dir / f"{dest.stem}_enter.mp4"
@@ -1406,7 +1777,7 @@ def render_element_entrance_clip(
     if hold_duration > 0.05:
         capture.apply_state(segment.slide_id, target_visible_ids, "", highlight_id, 1)
         final_image = image_dir / f"{dest.stem}_final.jpg"
-        add_subtitle_overlay(capture.screenshot(), segment.subtitle).save(final_image, quality=95)
+        decorate_frame(capture.screenshot(), segment.subtitle, avatar, speaking=bool(segment.subtitle.strip()), progress=1).save(final_image, quality=95)
         hold_clip = work_dir / f"{dest.stem}_hold.mp4"
         hold_segment = Segment(
             image=final_image,
@@ -1419,6 +1790,38 @@ def render_element_entrance_clip(
         render_still_clip(ffmpeg, hold_segment, hold_clip, fps=fps, width=width, height=height)
         parts.append(hold_clip)
     concat_segment_parts(ffmpeg, parts, dest)
+    segment.video = dest
+
+
+def render_state_transition_clip(
+    ffmpeg: str,
+    capture: ChromeDeckCapture,
+    segment: Segment,
+    current_visible_ids: list[str],
+    next_slide_id: int,
+    work_dir: Path,
+    dest: Path,
+    fps: int,
+    width: int,
+    height: int,
+    transition: str,
+    avatar: AvatarConfig | None = None,
+) -> None:
+    src_path = work_dir / f"{dest.stem}_transition_src.jpg"
+    target_path = work_dir / f"{dest.stem}_transition_target.jpg"
+    capture.apply_state(segment.slide_id, current_visible_ids, "", "", 1)
+    decorate_frame(capture.screenshot(), "", avatar, speaking=False, progress=0).save(src_path, quality=95)
+    capture.apply_state(next_slide_id, [], "", "", 1)
+    decorate_frame(capture.screenshot(), "", avatar, speaking=False, progress=0).save(target_path, quality=95)
+    transition_segment = Segment(
+        image=src_path,
+        duration=segment.duration,
+        subtitle="",
+        slide_id=segment.slide_id,
+        segment_index=segment.segment_index,
+        transition_to=target_path,
+    )
+    render_transition_clip(ffmpeg, transition_segment, dest, fps=fps, width=width, height=height, transition=transition)
     segment.video = dest
 
 
@@ -1458,6 +1861,7 @@ def render_element_entrance_clips(
     height: int,
     transition: str,
     entrance_duration: float,
+    avatar: AvatarConfig | None = None,
 ) -> list[Path]:
     clips_dir = out_dir / "element_entrance_clips"
     if clips_dir.exists():
@@ -1474,7 +1878,24 @@ def render_element_entrance_clips(
         for idx, segment in enumerate(segments, start=1):
             dest = clips_dir / f"clip_{idx:04d}.mp4"
             if segment.transition_to:
-                render_transition_clip(ffmpeg, segment, dest, fps=fps, width=width, height=height, transition=transition)
+                next_segment = next((item for item in segments[idx:] if item.slide_id != segment.slide_id and not item.transition_to), None)
+                if next_segment:
+                    render_state_transition_clip(
+                        ffmpeg,
+                        capture,
+                        segment,
+                        list(visible_by_slide.get(segment.slide_id, [])),
+                        next_segment.slide_id,
+                        state_images,
+                        dest,
+                        fps=fps,
+                        width=width,
+                        height=height,
+                        transition=transition,
+                        avatar=avatar,
+                    )
+                else:
+                    render_transition_clip(ffmpeg, segment, dest, fps=fps, width=width, height=height, transition=transition)
                 videos.append(dest)
                 continue
 
@@ -1485,7 +1906,7 @@ def render_element_entrance_clips(
             if related_id and related_id not in visible_ids:
                 visible_ids.append(related_id)
             target_visible = list(visible_ids)
-            highlight_id = related_id if segment.subtitle.strip() else ""
+            highlight_id = related_id if related_id else ""
 
             if entering_id:
                 render_element_entrance_clip(
@@ -1503,6 +1924,7 @@ def render_element_entrance_clips(
                     width=width,
                     height=height,
                     entrance_duration=entrance_duration,
+                    avatar=avatar,
                 )
             else:
                 render_element_still(
@@ -1516,6 +1938,7 @@ def render_element_entrance_clips(
                     fps=fps,
                     width=width,
                     height=height,
+                    avatar=avatar,
                 )
             videos.append(dest)
     return videos
@@ -1526,7 +1949,7 @@ def compose_video_from_clips(ffmpeg: str, out_dir: Path, videos: list[Path], nar
     video_track = out_dir / "video_track_ppt_transition.mp4"
     write_video_concat(videos, out_dir, video_concat)
     subprocess.run(
-        [
+        ffmpeg_command(
             ffmpeg,
             "-y",
             "-f",
@@ -1538,12 +1961,12 @@ def compose_video_from_clips(ffmpeg: str, out_dir: Path, videos: list[Path], nar
             "-c",
             "copy",
             str(video_track),
-        ],
+        ),
         cwd=out_dir,
         check=True,
     )
     subprocess.run(
-        [
+        ffmpeg_command(
             ffmpeg,
             "-y",
             "-i",
@@ -1560,7 +1983,7 @@ def compose_video_from_clips(ffmpeg: str, out_dir: Path, videos: list[Path], nar
             "+faststart",
             "-shortest",
             str(output),
-        ],
+        ),
         cwd=out_dir,
         check=True,
     )
@@ -1599,23 +2022,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", type=Path, default=PROJECT_ROOT / "outputs" / "html_video", help="Directory for audio, intermediate clips, subtitles, and final MP4.")
     parser.add_argument("--voice", default="zh-CN-YunxiNeural", help="Edge TTS voice name when --tts-provider is edge or auto.")
     parser.add_argument("--rate", default="+0%", help="Edge TTS speaking rate, for example +0%%, -10%%, or +15%%.")
-    parser.add_argument("--tts-provider", choices=["auto", "edge", "sapi", "dashscope", "openai"], default="auto", help="TTS backend. auto tries Edge and falls back to SAPI for slide-level audio.")
+    parser.add_argument("--tts-provider", choices=["auto", "edge", "sapi", "dashscope", "openai", "minimax"], default="auto", help="TTS backend. auto tries Edge and falls back to SAPI for slide-level audio.")
     parser.add_argument("--sapi-voice", default="Microsoft Huihui Desktop", help="Windows SAPI voice name used by --tts-provider sapi.")
     parser.add_argument("--dashscope-voice-id", default="", help="DashScope voice id used by --tts-provider dashscope.")
     parser.add_argument("--dashscope-model", default="cosyvoice-v3.5-plus", help="DashScope TTS model name.")
     parser.add_argument(
         "--dashscope-instruction",
-        default="Speak like a calm professional online-course lecturer with natural pauses.",
+        default=NATURAL_DASHSCOPE_TTS_INSTRUCTION,
         help="Speaking style instruction sent to DashScope TTS.",
     )
     parser.add_argument("--openai-tts-model", default="gpt-4o-mini-tts", help="OpenAI speech model used by --tts-provider openai.")
-    parser.add_argument("--openai-voice", default="alloy", help="OpenAI TTS voice used by --tts-provider openai.")
+    parser.add_argument("--openai-voice", default="nova", help="OpenAI TTS voice used by --tts-provider openai.")
+    parser.add_argument("--openai-speed", type=float, default=1.08, help="OpenAI TTS speed. Use values near 1.0 for natural speech.")
     parser.add_argument(
         "--openai-instructions",
-        default="Speak like a calm professional online-course lecturer with natural pauses.",
+        default=NATURAL_OPENAI_TTS_INSTRUCTION,
         help="Speaking style instruction sent to OpenAI TTS.",
     )
-    parser.add_argument("--tts-proxy", default="", help="HTTP(S) proxy for DashScope/OpenAI TTS requests.")
+    parser.add_argument("--minimax-base-url", default=DEFAULT_MINIMAX_BASE_URL, help="MiniMax relay base URL.")
+    parser.add_argument("--minimax-api-key-env", default="MINIMAX_TTS_API_KEY", help="Environment variable that stores the MiniMax relay token.")
+    parser.add_argument("--minimax-model", default=DEFAULT_MINIMAX_MODEL, help="MiniMax TTS model name.")
+    parser.add_argument("--minimax-voice", default=DEFAULT_MINIMAX_VOICE, help="MiniMax TTS voice id/name.")
+    parser.add_argument("--minimax-speed", type=float, default=1.0, help="MiniMax TTS speed.")
+    parser.add_argument("--minimax-protocol", choices=["auto", "openai", "official"], default="auto", help="MiniMax relay protocol. auto tries OpenAI-compatible first, then official MiniMax.")
+    parser.add_argument("--tts-proxy", default="", help="HTTP(S) proxy for HTTP TTS requests.")
     parser.add_argument("--audio-granularity", choices=["slide", "segment"], default="slide", help="Generate one audio file per slide or per subtitle segment.")
     # Visual mode controls how the video track is rendered from the HTML deck.
     parser.add_argument("--visual-mode", choices=["static", "ppt-transition", "element-entrance"], default="static", help="static: still screenshots; ppt-transition: page transitions; element-entrance: reveal elements by subtitle timing.")
@@ -1625,6 +2055,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=1920, help="Output video width in pixels.")
     parser.add_argument("--height", type=int, default=1080, help="Output video height in pixels.")
     parser.add_argument("--chrome", type=Path, default=DEFAULT_CHROME, help="Chrome executable used for real HTML rendering in element-entrance mode.")
+    parser.add_argument("--avatar-mode", choices=["none", "2d"], default="none", help="Overlay a lightweight 2D cartoon presenter.")
+    parser.add_argument("--avatar-position", choices=["bottom-right", "bottom-left"], default="bottom-right", help="2D presenter placement.")
+    parser.add_argument("--avatar-scale", type=float, default=0.22, help="2D presenter height as a fraction of video height.")
     parser.add_argument("--segment-gap", type=float, default=0.16, help="Silent gap in seconds inserted between subtitle-segment audio files.")
     parser.add_argument("--pause", type=float, default=0.35, help="Silent pause in seconds inserted between slides.")
     parser.add_argument("--force-tts", action="store_true", help="Regenerate TTS audio even when cache files exist.")
@@ -1639,6 +2072,12 @@ def main() -> None:
     deck = load_json(args.data)
     capture_manifest = load_json(args.capture_manifest)
     ffmpeg = ffmpeg_exe()
+    avatar = AvatarConfig(
+        mode=args.avatar_mode,
+        position=args.avatar_position,
+        scale=args.avatar_scale,
+        fps=args.fps,
+    )
 
     if args.audio_granularity == "segment":
         audio_units = asyncio.run(
@@ -1656,7 +2095,14 @@ def main() -> None:
                 dashscope_instruction=args.dashscope_instruction,
                 openai_tts_model=args.openai_tts_model,
                 openai_voice=args.openai_voice,
+                openai_speed=args.openai_speed,
                 openai_instructions=args.openai_instructions,
+                minimax_base_url=args.minimax_base_url,
+                minimax_api_key_env=args.minimax_api_key_env,
+                minimax_model=args.minimax_model,
+                minimax_voice=args.minimax_voice,
+                minimax_speed=args.minimax_speed,
+                minimax_protocol=args.minimax_protocol,
                 tts_proxy=args.tts_proxy,
                 segment_gap=args.segment_gap,
                 slide_pause=args.pause,
@@ -1667,6 +2113,7 @@ def main() -> None:
             capture_manifest,
             args.frames_dir,
             args.out_dir / "subtitle_frames",
+            avatar=avatar,
         )
         narration = compose_audio_from_units(ffmpeg, audio_units, args.out_dir)
     else:
@@ -1686,7 +2133,14 @@ def main() -> None:
                     dashscope_instruction=args.dashscope_instruction,
                     openai_tts_model=args.openai_tts_model,
                     openai_voice=args.openai_voice,
+                    openai_speed=args.openai_speed,
                     openai_instructions=args.openai_instructions,
+                    minimax_base_url=args.minimax_base_url,
+                    minimax_api_key_env=args.minimax_api_key_env,
+                    minimax_model=args.minimax_model,
+                    minimax_voice=args.minimax_voice,
+                    minimax_speed=args.minimax_speed,
+                    minimax_protocol=args.minimax_protocol,
                     tts_proxy=args.tts_proxy,
                 )
             )
@@ -1709,7 +2163,14 @@ def main() -> None:
                     dashscope_instruction=args.dashscope_instruction,
                     openai_tts_model=args.openai_tts_model,
                     openai_voice=args.openai_voice,
+                    openai_speed=args.openai_speed,
                     openai_instructions=args.openai_instructions,
+                    minimax_base_url=args.minimax_base_url,
+                    minimax_api_key_env=args.minimax_api_key_env,
+                    minimax_model=args.minimax_model,
+                    minimax_voice=args.minimax_voice,
+                    minimax_speed=args.minimax_speed,
+                    minimax_protocol=args.minimax_protocol,
                     tts_proxy=args.tts_proxy,
                 )
             )
@@ -1721,6 +2182,7 @@ def main() -> None:
             audio_files,
             args.out_dir / "subtitle_frames",
             pause=args.pause,
+            avatar=avatar,
         )
         narration = compose_audio(ffmpeg, audio_files, args.out_dir, pause=args.pause)
 
@@ -1751,6 +2213,7 @@ def main() -> None:
             height=args.height,
             transition=args.slide_transition,
             entrance_duration=args.entrance_duration,
+            avatar=avatar,
         )
         compose_video_from_clips(ffmpeg, args.out_dir, videos, narration, output)
     else:
